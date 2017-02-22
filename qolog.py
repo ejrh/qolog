@@ -49,7 +49,11 @@ class Variable(Term):
         return [self]
 
     def copy_to_new_scope(self, scope):
-        return scope.var(self.name)
+        term = resolve_variable(self)
+        if isinstance(term, Variable):
+            return scope.var(self.name)
+        else:
+            return term.copy_to_new_scope(scope)
 
     def __repr__(self):
         return 'Variable(%s)' % (repr(self.name))
@@ -116,7 +120,7 @@ def make_list(parts, tail=None):
 
 ATOM_CHARS = string.ascii_lowercase + '\''
 WORD_CHARS = string.letters + string.digits + '_'
-OPERATOR_CHARS = ',=:-'
+OPERATOR_CHARS = ',=:->\\+'
 SIMPLE_CHARS = WORD_CHARS + '(['
 
 class Tokeniser(object):
@@ -196,10 +200,14 @@ class Tokeniser(object):
 
 def tokenise_str(input_str):
     """
+        Tokenise a Prolog term string into a list of individual tokens.
+
         >>> tokenise_str('X = 5')
         ['X', '=', '5']
         >>> tokenise_str("'hello there'")
         ['hello there']
+        >>> tokenise_str('\\+foo(X)')
+        ['\\\\+', 'foo', '(', 'X', ')']
     """
     t = Tokeniser(input_str)
     tokens = []
@@ -218,6 +226,9 @@ OPERATORS = {
     ':-': (1200, 'xfx'),
     'is': (700, 'xfx'),
     '+': (500, 'yfx'),
+    '-': (500, 'yfx'),
+    '>=': (700, 'xfx'),
+    '\\+': (900, 'fy'),
 }
 
 class Parser(object):
@@ -234,9 +245,16 @@ class Parser(object):
 
         def reduce():
             stack_oper = operator_stack.pop()
-            v2 = value_stack.pop()
-            v1 = value_stack.pop()
-            item = Compound(stack_oper, [v1, v2])
+            _, type = OPERATORS[stack_oper]
+            if type in ('xfx', 'xfy', 'yfx'):
+                v2 = value_stack.pop()
+                v1 = value_stack.pop()
+                item = Compound(stack_oper, [v1, v2])
+            elif type in ('fx', 'xf', 'fy', 'yf'):
+                v1 = value_stack.pop()
+                item = Compound(stack_oper, [v1])
+            else:
+                raise Exception('Unhandled operator type ' + type)
             value_stack.append(item)
             #print>>sys.stderr, 'reduced using operator', stack_oper
 
@@ -366,6 +384,14 @@ def parse(term_str, other_term_str=None):
         Compound('[|]', [Variable('X'), Compound('[|]', [Variable('Y'), Atom('[]')])])
         >>> parse('X is Y+2')
         Compound('is', [Variable('X'), Compound('+', [Variable('Y'), Integer(2)])])
+        >>> parse('\\+X')
+        Compound('\\\\+', [Variable('X')])
+        >>> parse('W , \\+ X')
+        Compound(',', [Variable('W'), Compound('\\\\+', [Variable('X')])])
+        >>> parse('\\+ X, W')
+        Compound(',', [Compound('\\\\+', [Variable('X')]), Variable('W')])
+        >>> parse('\\+ X + W')
+        Compound('\\\\+', [Compound('+', [Variable('X'), Variable('W')])])
     """
     p = Parser(term_str)
     term = p.parse()
@@ -441,6 +467,14 @@ def term_is_operator(term):
         return False
     return term.name in OPERATORS
 
+def get_functor(term):
+    if isinstance(term, Compound):
+        return term.name, len(term.subterms)
+    elif isinstance(term, Atom):
+        return term.name, 0
+    else:
+        return None
+
 def bind(v, t):
     v.binding = t
 
@@ -511,7 +545,7 @@ def unify_strs(str1, str2):
         unification_strs[str(v)] = unparse(v.binding)
     return unification_strs
 
-def equals_rule(term):
+def equals_rule(term, database):
     if not term_is_functor(term, '=', 2):
         return
     t1, t2 = term.subterms
@@ -521,27 +555,48 @@ def equals_rule(term):
     yield bound_vars
     unbind_all(bound_vars)
 
-def comma_rule(term):
+def comma_rule(term, database):
     if not term_is_functor(term, ',', 2):
         return
     t1, t2 = term.subterms
-    for bound_vars in prove(t1):
-        for more_bound_vars in prove(t2):
+    for bound_vars in prove(t1, database):
+        for more_bound_vars in prove(t2, database):
             yield bound_vars.union(more_bound_vars)
 
-def semicolon_rule(term):
+def semicolon_rule(term, database):
     if not term_is_functor(term, ';', 2):
         return
     t1, t2 = term.subterms
-    for bound_vars in prove(t1):
+    for bound_vars in prove(t1, database):
         yield bound_vars
-    for bound_vars in prove(t2):
+    for bound_vars in prove(t2, database):
         yield bound_vars
 
-def true_rule(term):
+def true_rule(term, database):
     if not term_is_atom(term, 'true'):
-        return
-    yield set()
+        return []
+    return [set()]
+
+def fail_rule(term, database):
+    if not term_is_atom(term, 'fail'):
+        return []
+    return []
+
+def not_rule(term, database):
+    if not term_is_functor(term, '\\+', 1):
+        return []
+    goal = term.subterms[0]
+    passed = False
+    bound_vars = None
+    for bound_vars in prove(goal, database):
+        passed = True
+        break
+    if bound_vars is not None:
+        unbind_all(bound_vars)
+    if passed:
+        return []
+    else:
+        return [set()]
 
 def evaluate_term(term):
     #print >>sys.stderr, 'evaluating: %s' % unparse(term)
@@ -557,10 +612,14 @@ def evaluate_term(term):
         rhs_value = evaluate_term(rhs)
         if op == '+':
             return lhs_value + rhs_value
+        elif op == '-':
+            return lhs_value - rhs_value
+        else:
+            raise Exception('Unhandled operator: ' + op)
     else:
         raise Exception('Unhandled expression')
 
-def is_rule(term):
+def is_rule(term, database):
     if not term_is_functor(term, 'is', 2):
         return
     t1, t2 = term.subterms
@@ -571,122 +630,232 @@ def is_rule(term):
     yield bound_vars
     unbind_all(bound_vars)
 
-def write_rule(term):
-    if not term_is_functor(term, 'write', 1):
-        return
+def ge_rule(term, database):
+    if not term_is_functor(term, '>=', 2):
+        return []
+    t1, t2 = term.subterms
+    result1 = evaluate_term(t1)
+    result2 = evaluate_term(t2)
+    if result1 >= result2:
+        return [set()]
+    return []
+
+def display_rule(term, database):
+    if not term_is_functor(term, 'display', 1):
+        return []
     arg = resolve_variable(term.subterms[0])
     print arg,
-    yield set()
+    return [set()]
 
-def nl_rule(term):
+def nl_rule(term, database):
     if not term_is_atom(term, 'nl'):
-        return
+        return []
     print
-    yield set()
+    return [set()]
 
-def compile_rule(rule_str):
-    rule_term = parse(rule_str)
+def findall_rule(term, database):
+    if not term_is_functor(term, 'findall', 3):
+        return
+    temp, goal, bag_var = term.subterms
+    results = []
+    for bound_vars in prove(goal, database):
+        result = temp.copy_to_new_scope(Scope())
+        results.append(result)
+    #print >>sys.stderr, 'results', results
+    bag = make_list(results)
+    unify(bag_var, bag)
+    bound_vars = {bag_var}
+    yield bound_vars
+    unbind_all(bound_vars)
+
+def var_rule(term, database):
+    if not term_is_functor(term, 'var', 1):
+        return []
+    term = resolve_variable(term.subterms[0])
+    if isinstance(term, Variable):
+        return [set()]
+    return []
+
+def integer_rule(term, database):
+    if not term_is_functor(term, 'integer', 1):
+        return []
+    term = resolve_variable(term.subterms[0])
+    if isinstance(term, Integer):
+        return [set()]
+    return []
+
+def compile_rule(rule_term):
     if not term_is_functor(rule_term, ':-', 2):
         raise Exception('Invalid rule: %s' % rule_term)
-    def f(term):
+    def f(term, database):
         local_scope = Scope()
         local_rule = rule_term.copy_to_new_scope(local_scope)
         head, body = local_rule.subterms
         bound_vars = unify(term, head)
         if bound_vars is None:
             return
-        for more_bound_vars in prove(body):
+        for more_bound_vars in prove(body, database):
             yield map_bound_vars(bound_vars.union(more_bound_vars), term)
         unbind_all(bound_vars)
     return f
 
-RULES = [
-    equals_rule,
-    comma_rule,
-    semicolon_rule,
-    true_rule,
-    is_rule,
-    write_rule,
-    nl_rule,
-    compile_rule('length([], 0) :- true'),
-    compile_rule('length([_|T], X) :- length(T, X0), X is X0 + 1'),
-    compile_rule('member(M, L) :- L = [M|L2]'),
-    compile_rule('member(M, L) :- L = [X|L2], member(M, L2)'),
-    compile_rule('reverse(X, Y) :- reverse(X, [], Y, Y)'),
-    compile_rule('reverse([], A, A, []) :- true'),
-    compile_rule('reverse([A|B], C, D, [_|E]) :- reverse(B, [A|C], D, E)'),
+class Database(object):
+    def __init__(self):
+        self.rule_index = {}
+        self.register_builtins()
+
+    def register_builtins(self):
+        self.register(('=', 2), equals_rule)
+        self.register((',', 2), comma_rule)
+        self.register((';', 2), semicolon_rule)
+        self.register(('true', 0), true_rule)
+        self.register(('fail', 0), fail_rule)
+        self.register(('\\+', 1), not_rule)
+        self.register(('is', 2), is_rule)
+        self.register(('>=', 2), ge_rule)
+        self.register(('display', 1), display_rule)
+        self.register(('nl', 0), nl_rule)
+        self.register(('findall', 3), findall_rule)
+        self.register(('var', 1), var_rule)
+        self.register(('integer', 1), integer_rule)
+
+    def register(self, functor, rules):
+        if functor in self.rule_index:
+            raise Exception('Cannot override existing rule for %s' % (functor,))
+        if type(rules) is not list:
+            rules = [rules]
+        self.rule_index[functor] = rules
+
+    def add_rules(self, rules):
+        functor_map = {}
+        for rule in rules:
+            if str(rule):
+                rule = parse(rule)
+            if not term_is_functor(rule, ':-', 2):
+                rule = Compound(':-', [rule, Atom('true')])
+            head = rule.subterms[0]
+            functor = get_functor(head)
+            if functor is None:
+                raise Exception('Cannot make a rule with head %s' % (head,))
+            compiled_rule = compile_rule(rule)
+            if functor not in functor_map:
+                functor_map[functor] = []
+            functor_map[functor].append(compiled_rule)
+
+        for functor, rules in functor_map.items():
+            self.register(functor, rules)
+
+    def get_rules(self, functor):
+        if functor not in self.rule_index:
+            raise Exception('No rules for %s' % (functor,))
+        return self.rule_index[functor]
+
+LIST_RULES = [
+    'length([], 0) :- true',
+    'length([_|T], X) :- var(X), length(T, X0), X is X0 + 1',
+    'length([_|T], X) :- integer(X), X >= 0, Xm1 is X - 1, length(T, Xm1)',
+    'member(M, L) :- L = [M|L2]',
+    'member(M, L) :- L = [X|L2], member(M, L2)',
+    'reverse(X, Y) :- reverse(X, [], Y, Y)',
+    'reverse([], A, A, []) :- true',
+    'reverse([A|B], C, D, [_|E]) :- reverse(B, [A|C], D, E)',
+    'concat([], B, B) :- true',
+    'concat([H|A], B, [H|C]) :- concat(A, B, C)',
 ]
 
 def bound_vars_str(vars):
     return ', '.join('%s = %s' % (str(v), unparse(v.binding)) for v in sorted(vars, key=lambda vv: vv.name))
 
-def prove(goal):
+def prove(goal, database):
     """
         Attempt to pove a goal by unifying it with all possible rules.
 
-        >>> prove_str('X = a; X = b')
+        >>> db = Database()
+        >>> db.add_rules(LIST_RULES)
+        >>> prove_str('X = a; X = b', db)
         X = a
         X = b
-        >>> prove_str('X = a; Y = b')
+        >>> prove_str('X = a; Y = b', db)
         X = a
         Y = b
-        >>> prove_str('X = a, X = b')
-        >>> prove_str('X = a, Y = b')
+        >>> prove_str('X = a, X = b', db)
+        >>> prove_str('X = a, Y = b', db)
         X = a, Y = b
-        >>> prove_str('X = Y, X = 5')
+        >>> prove_str('X = Y, X = 5', db)
         X = 5, Y = 5
-        >>> prove_str('X = Y, Y = 5')
+        >>> prove_str('X = Y, Y = 5', db)
         X = 5, Y = 5
-        >>> prove_str('Y = 5, X is 3 + Y')
+        >>> prove_str('Y = 5, X is 3 + Y', db)
         X = 8, Y = 5
-        >>> prove_str('6 is 5')
-        >>> prove_str('length([], 0)')
+        >>> prove_str('6 is 5', db)
+        >>> prove_str('length([], 0)', db)
         <BLANKLINE>
-        >>> prove_str('length([a], 1)')
+        >>> prove_str('length([a], 1)', db)
         <BLANKLINE>
-        >>> prove_str('length([a], 2)')
-        >>> prove_str('length([a], X)')
+        >>> prove_str('length([a], 2)', db)
+        >>> prove_str('length([a], X)', db)
         X = 1
-        >>> prove_str('L1 = [c,d], L2 = [a,b], L2 = [a,L3]')
+        >>> prove_str('L1 = [c,d], L2 = [a,b], L2 = [a,L3]', db)
         L1 = [c,d], L2 = [a,b], L3 = b
-        >>> prove_str('member(X, [a,b,c]), Y = [X|Z], Y = [W,2]')
+        >>> prove_str('member(X, [a,b,c]), Y = [X|Z], Y = [W,2]', db)
         W = a, X = a, Y = [a,2], Z = [2]
         W = b, X = b, Y = [b,2], Z = [2]
         W = c, X = c, Y = [c,2], Z = [2]
-        >>> prove_str('X = [a,b|Z], X = [A,B,c,d,e]')
+        >>> prove_str('X = [a,b|Z], X = [A,B,c,d,e]', db)
         A = a, B = b, X = [a,b,c,d,e], Z = [c,d,e]
-        >>> prove_str('reverse([a,b,c,d], X)')
+        >>> prove_str('reverse([a,b,c,d], X)', db)
         X = [d,c,b,a]
-        >>> prove_str('X is 2 + 2')
+        >>> prove_str('X is 2 + 2', db)
         X = 4
-        >>> prove_str("(write('X could be any of... '), member(X, [1,2,3]), write(X), fail); nl, fail")
+        >>> prove_str("(display('X could be any of... '), member(X, [1,2,3]), display(X), fail); nl, fail", db)
         X could be any of...  1 2 3
-        >>> prove_str('length([a,b,c], X)')
+        >>> prove_str('length([a,b,c], X)', db)
         X = 3
-
+        >>> prove_str('length(L, 2)', db)
+        L = [_, _]
+        >>> prove_str('findall(X, member(X, [a,b,c]), S)', db)
+        S = [a,b,c]
+        >>> prove_str('X = 5, fail; X = 7', db)
+        X = 7
+        >>> prove_str('var(X), Y = 5', db)
+        Y = 5
+        >>> prove_str('X = 3, var(X), Y = 5', db)
+        >>> prove_str('integer(3), Y = 1; integer(X), Y = 2; integer(w), Y = 3', db)
+        Y = 1
+        >>> prove_str('\+(X = 5)', db)
+        >>> prove_str('X = 3, \+(X = 5)', db)
+        X = 3
+        >>> prove_str('concat([a,b,c], [d,e], Z)', db)
+        Z = [a,b,c,d,e]
     """
     #print >>sys.stderr, "proving...", unparse(goal)
-    for r in RULES:
-        for bound_vars in r(goal):
+    functor = get_functor(goal)
+
+    for r in database.get_rules(functor):
+        for bound_vars in r(goal, database):
             yield bound_vars
 
-def prove_str(goal_str):
+def prove_str(goal_str, database):
     goal = parse(goal_str)
-    for bindings in prove(goal):
+    for bindings in prove(goal, database):
         print bound_vars_str(bindings)
 
-def prove_interactively(goal):
+def prove_interactively(goal, database):
     solution_num = 0
-    for bound_vars in prove(goal):
+    for bound_vars in prove(goal, database):
         solution_num += 1
         print '%d.  %s' % (solution_num, bound_vars_str(bound_vars))
+        if solution_num >= 100:
+            print '(too many solutions)'
+            break
     print '(%d solutions)' % solution_num
 
 def main():
-    goal = parse('hello')
+    db = Database()
+    db.add_rules(LIST_RULES)
+    goal = parse('length(L, X)')
     print 'Proving:', unparse(goal)
-    prove_interactively(goal)
-    print
+    prove_interactively(goal, db)
 
 if __name__ == '__main__':
     main()
