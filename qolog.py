@@ -41,8 +41,7 @@ class Compound(Term):
         return '%s(%s)' % (self.name, ', '.join('%s' % resolve_variable(x) for x in self.subterms))
 
 class Variable(Term):
-    def __init__(self, name):
-        self.name = name
+    def __init__(self):
         self.binding = None
 
     def get_vars(self):
@@ -51,15 +50,15 @@ class Variable(Term):
     def copy_to_new_scope(self, scope):
         term = resolve_variable(self)
         if isinstance(term, Variable):
-            return scope.var(self.name)
+            return scope.var(id(term))
         else:
             return term.copy_to_new_scope(scope)
 
     def __repr__(self):
-        return 'Variable(%s)' % (repr(self.name))
+        return 'Variable()'
 
     def __str__(self):
-        return self.name
+        return '_'
 
 class Integer(Term):
     def __init__(self, value):
@@ -79,20 +78,37 @@ class Integer(Term):
 
 class Scope(object):
     def __init__(self):
-        self.vars = {}
-        self.next_anonymous_id = 1
+        self.names_to_vars = {}
+        self.vars_to_names = {}
+        self.next_id = 1
 
     def var(self, name):
         if name == '_':
-            return Variable('_%d' % self.get_anonymous_id())
-        if name not in self.vars:
-            self.vars[name] = Variable(name)
-        return self.vars[name]
+            return Variable()
+        if name not in self.names_to_vars:
+            var = Variable()
+            self.names_to_vars[name] = var
+            self.vars_to_names[var] = name
+            return var
+        return self.names_to_vars[name]
 
-    def get_anonymous_id(self):
-        rv = self.next_anonymous_id
-        self.next_anonymous_id += 1
-        return rv
+    def var_mappings(self, vars):
+        result = {}
+        for name,var in self.names_to_vars.items():
+            term = resolve_variable(var)
+            if term == var:
+                continue
+            result[name] = term
+        return result
+
+    def get_name(self, var):
+        if var in self.vars_to_names:
+            return self.vars_to_names[var]
+        else:
+            name = '_G%d' % self.next_id
+            self.next_id += 1
+            self.vars_to_names[var] = name
+            return name
 
 LIST_NIL = '[]'
 LIST_CONS = '[|]'
@@ -160,7 +176,7 @@ class Tokeniser(object):
                 x = self.peek_ch()
             word = self.term_str[start_pos:self.pos]
             self.pos += 1
-            return word
+            return "'%s'" % word
         elif self.peek_ch() in WORD_CHARS:
             start_pos = self.pos
             x = self.peek_ch()
@@ -205,9 +221,9 @@ def tokenise_str(input_str):
         >>> tokenise_str('X = 5')
         ['X', '=', '5']
         >>> tokenise_str("'hello there'")
-        ['hello there']
-        >>> tokenise_str('\\+foo(X)')
-        ['\\\\+', 'foo', '(', 'X', ')']
+        ["'hello there'"]
+        >>> tokenise_str('\+foo(X)')
+        ['\\\+', 'foo', '(', 'X', ')']
     """
     t = Tokeniser(input_str)
     tokens = []
@@ -232,9 +248,9 @@ OPERATORS = {
 }
 
 class Parser(object):
-    def __init__(self, term_str):
+    def __init__(self, term_str, scope):
         self.tokeniser = Tokeniser(term_str)
-        self.scope = Scope()
+        self.scope = scope
 
     def reset(self, term_str):
         self.tokeniser = Tokeniser(term_str)
@@ -344,64 +360,69 @@ class Parser(object):
             self.tokeniser.next()
             return Compound(name, subterms)
         else:
+            if name[0] == "'":
+                name = name[1:]
+            if name[-1] == "'":
+                name = name[:-1]
             return Atom(name)
 
-def parse(term_str, other_term_str=None):
+def parse(*term_strs):
     """
         Parse a Prolog term string into a Term object.
 
-        >>> parse('x')
+        >>> parse('x')[0]
         Atom('x')
-        >>> parse("'hello there'")
+        >>> parse("'hello there'")[0]
         Atom('hello there')
-        >>> parse('X')
-        Variable('X')
-        >>> parse('_X')
-        Variable('_X')
-        >>> parse('1')
+        >>> parse('X')[0]
+        Variable()
+        >>> parse('_X')[0]
+        Variable()
+        >>> parse('1')[0]
         Integer(1)
-        >>> parse('(x)')
+        >>> parse('(x)')[0]
         Atom('x')
-        >>> parse('f(a)')
+        >>> parse('f(a)')[0]
         Compound('f', [Atom('a')])
-        >>> parse('[]')
+        >>> parse('[]')[0]
         Atom('[]')
-        >>> parse('X = a; X = b')
-        Compound(';', [Compound('=', [Variable('X'), Atom('a')]), Compound('=', [Variable('X'), Atom('b')])])
-        >>> parse('[a]')
+        >>> parse('X = a; X = b')[0]
+        Compound(';', [Compound('=', [Variable(), Atom('a')]), Compound('=', [Variable(), Atom('b')])])
+        >>> parse('[a]')[0]
         Compound('[|]', [Atom('a'), Atom('[]')])
-        >>> parse('[a|X]')
-        Compound('[|]', [Atom('a'), Variable('X')])
-        >>> parse('f(a, 5)')
+        >>> parse('[a|X]')[0]
+        Compound('[|]', [Atom('a'), Variable()])
+        >>> parse('f(a, 5)')[0]
         Compound('f', [Atom('a'), Integer(5)])
-        >>> parse('X = 4')
-        Compound('=', [Variable('X'), Integer(4)])
-        >>> parse('(X = 4), f(X)')
-        Compound(',', [Compound('=', [Variable('X'), Integer(4)]), Compound('f', [Variable('X')])])
-        >>> parse('X = 4, g')
-        Compound(',', [Compound('=', [Variable('X'), Integer(4)]), Atom('g')])
-        >>> parse('[X,Y]')
-        Compound('[|]', [Variable('X'), Compound('[|]', [Variable('Y'), Atom('[]')])])
-        >>> parse('X is Y+2')
-        Compound('is', [Variable('X'), Compound('+', [Variable('Y'), Integer(2)])])
-        >>> parse('\\+X')
-        Compound('\\\\+', [Variable('X')])
-        >>> parse('W , \\+ X')
-        Compound(',', [Variable('W'), Compound('\\\\+', [Variable('X')])])
-        >>> parse('\\+ X, W')
-        Compound(',', [Compound('\\\\+', [Variable('X')]), Variable('W')])
-        >>> parse('\\+ X + W')
-        Compound('\\\\+', [Compound('+', [Variable('X'), Variable('W')])])
+        >>> parse('X = 4')[0]
+        Compound('=', [Variable(), Integer(4)])
+        >>> parse('(X = 4), f(X)')[0]
+        Compound(',', [Compound('=', [Variable(), Integer(4)]), Compound('f', [Variable()])])
+        >>> parse('X = 4, g')[0]
+        Compound(',', [Compound('=', [Variable(), Integer(4)]), Atom('g')])
+        >>> parse('[X,Y]')[0]
+        Compound('[|]', [Variable(), Compound('[|]', [Variable(), Atom('[]')])])
+        >>> parse('X is Y+2')[0]
+        Compound('is', [Variable(), Compound('+', [Variable(), Integer(2)])])
+        >>> parse('\+X')[0]
+        Compound('\\\+', [Variable()])
+        >>> parse('W , \+ X')[0]
+        Compound(',', [Variable(), Compound('\\\+', [Variable()])])
+        >>> parse('\+ X, W')[0]
+        Compound(',', [Compound('\\\+', [Variable()]), Variable()])
+        >>> parse('\+ X + W')[0]
+        Compound('\\\+', [Compound('+', [Variable(), Variable()])])
     """
-    p = Parser(term_str)
-    term = p.parse()
-    if other_term_str is None:
-        return term
-    p.reset(other_term_str)
-    other_term = p.parse()
-    return term, other_term
+    scope = Scope()
+    rvs = []
+    for ts in term_strs:
+        p = Parser(ts, scope)
+        term = p.parse()
+        rvs.append(term)
+    rvs.append(scope)
+    return tuple(rvs)
 
-def unparse(term):
+def unparse(term, scope):
     term = resolve_variable(term)
     if term_is_atom(term, LIST_NIL):
         return '[]'
@@ -413,17 +434,23 @@ def unparse(term):
             n = resolve_variable(n.subterms[1])
         tail = n
         if term_is_atom(tail, LIST_NIL):
-            return '[%s]' % ','.join(str(resolve_variable(p)) for p in parts)
+            return '[%s]' % ','.join(unparse(p, scope) for p in parts)
         else:
-            return '[%s|%s]' % (','.join(str(resolve_variable(p)) for p in parts), str(tail))
+            return '[%s|%s]' % (','.join(unparse(p, scope) for p in parts), unparse(tail, scope))
     elif term_is_operator(term):
         prec, type = OPERATORS[term.name]
         lhs, rhs = term.subterms
-        return '%s %s %s' % (unparse(lhs), term.name, unparse(rhs))
+        return '%s %s %s' % (unparse(lhs, scope), term.name, unparse(rhs, scope))
     elif isinstance(term, Compound):
-        return '%s(%s)' % (term.name, ', '.join('%s' % unparse(x) for x in term.subterms))
+        return '%s(%s)' % (term.name, ', '.join('%s' % unparse(x, scope) for x in term.subterms))
+    elif isinstance(term, Variable):
+        return scope.get_name(term)
+    elif isinstance(term, Integer):
+        return str(term.value)
+    elif isinstance(term, Atom):
+        return term.name
     else:
-        return str(term)
+        return '???'
 
 def resolve_variable(v):
     if not isinstance(v, Variable):
@@ -504,22 +531,24 @@ def unify(t1, t2):
 
         >>> unify_strs('x', 'y')
         >>> unify_strs('x', 'x')
-        {}
+        []
         >>> unify_strs('X', 'y')
-        {'X': 'y'}
+        ['X']
         >>> unify_strs('X', 'Y')
-        {'X': 'Y'}
+        ['X']
         >>> unify_strs('X', 'X')
-        {}
+        []
         >>> unify_strs('X', 'f(a)')
-        {'X': 'f(a)'}
+        ['X']
         >>> unify_strs('f(X)', 'f(a)')
-        {'X': 'a'}
+        ['X']
         >>> unify_strs('f(X, X)', 'f(a, b)')
+        >>> unify_strs('f(X, Y)', 'f(a, b)')
+        ['X', 'Y']
         >>> unify_strs('f(X, X)', 'f(a, a)')
-        {'X': 'a'}
+        ['X']
         >>> unify_strs('[X,Y]', 'Z')
-        {'Z': '[X,Y]'}
+        ['Z']
     """
     t1 = resolve_variable(t1)
     t2 = resolve_variable(t2)
@@ -536,14 +565,11 @@ def unify(t1, t2):
     return None
 
 def unify_strs(str1, str2):
-    t1, t2 = parse(str1, str2)
+    t1, t2, scope = parse(str1, str2)
     unifications = unify(t1, t2)
     if unifications is None:
         return None
-    unification_strs = {}
-    for v in unifications:
-        unification_strs[str(v)] = unparse(v.binding)
-    return unification_strs
+    return sorted(scope.var_mappings(unifications).keys())
 
 def equals_rule(term, database):
     if not term_is_functor(term, '=', 2):
@@ -691,7 +717,7 @@ def compile_rule(rule_term):
         local_scope = Scope()
         local_rule = rule_term.copy_to_new_scope(local_scope)
         head, body = local_rule.subterms
-        bound_vars = unify(term, head)
+        bound_vars = unify(head, term)
         if bound_vars is None:
             return
         for more_bound_vars in prove(body, database):
@@ -730,7 +756,7 @@ class Database(object):
         functor_map = {}
         for rule in rules:
             if str(rule):
-                rule = parse(rule)
+                rule, scope = parse(rule)
             if not term_is_functor(rule, ':-', 2):
                 rule = Compound(':-', [rule, Atom('true')])
             head = rule.subterms[0]
@@ -763,8 +789,8 @@ LIST_RULES = [
     'concat([H|A], B, [H|C]) :- concat(A, B, C)',
 ]
 
-def bound_vars_str(vars):
-    return ', '.join('%s = %s' % (str(v), unparse(v.binding)) for v in sorted(vars, key=lambda vv: vv.name))
+def bound_vars_str(vars, scope):
+    return ', '.join('%s = %s' % (str(v), unparse(t, scope)) for v,t in sorted(scope.var_mappings(vars).items()))
 
 def prove(goal, database):
     """
@@ -787,6 +813,8 @@ def prove(goal, database):
         X = 5, Y = 5
         >>> prove_str('Y = 5, X is 3 + Y', db)
         X = 8, Y = 5
+        >>> prove_str('X = Y', db)
+        X = Y
         >>> prove_str('6 is 5', db)
         >>> prove_str('length([], 0)', db)
         <BLANKLINE>
@@ -812,7 +840,7 @@ def prove(goal, database):
         >>> prove_str('length([a,b,c], X)', db)
         X = 3
         >>> prove_str('length(L, 2)', db)
-        L = [_, _]
+        L = [_G1,_G2]
         >>> prove_str('findall(X, member(X, [a,b,c]), S)', db)
         S = [a,b,c]
         >>> prove_str('X = 5, fail; X = 7', db)
@@ -827,6 +855,13 @@ def prove(goal, database):
         X = 3
         >>> prove_str('concat([a,b,c], [d,e], Z)', db)
         Z = [a,b,c,d,e]
+        >>> prove_str('concat(X, [y,z], [w,x,y,z])', db)
+        X = [w,x]
+        >>> db.add_rules(['triplicate(X, W) :- W = [X,X,X]'])
+        >>> prove_str('X = 1, findall(S, triplicate(X, S), B)', db)
+        B = [[1,1,1]], X = 1
+        >>> prove_str('findall(S, triplicate(X, S), B), X = 1, B = [[2,2,2]]', db)
+        B = [[2,2,2]], X = 1
     """
     #print >>sys.stderr, "proving...", unparse(goal)
     functor = get_functor(goal)
@@ -836,15 +871,15 @@ def prove(goal, database):
             yield bound_vars
 
 def prove_str(goal_str, database):
-    goal = parse(goal_str)
+    goal, scope = parse(goal_str)
     for bindings in prove(goal, database):
-        print bound_vars_str(bindings)
+        print bound_vars_str(bindings, scope)
 
-def prove_interactively(goal, database):
+def prove_interactively(goal, scope, database):
     solution_num = 0
     for bound_vars in prove(goal, database):
         solution_num += 1
-        print '%d.  %s' % (solution_num, bound_vars_str(bound_vars))
+        print '%d.  %s' % (solution_num, bound_vars_str(bound_vars, scope))
         if solution_num >= 100:
             print '(too many solutions)'
             break
@@ -853,9 +888,9 @@ def prove_interactively(goal, database):
 def main():
     db = Database()
     db.add_rules(LIST_RULES)
-    goal = parse('length(L, X)')
-    print 'Proving:', unparse(goal)
-    prove_interactively(goal, db)
+    goal, scope = parse("X = [Y], Y = [X]")
+    print 'Proving:', unparse(goal, scope)
+    prove_interactively(goal, scope, db)
 
 if __name__ == '__main__':
     main()
