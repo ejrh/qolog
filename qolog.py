@@ -234,7 +234,6 @@ def tokenise_str(input_str):
         tokens.append(token)
     return tokens
 
-
 OPERATORS = {
     '=': (700, 'xfx'),
     ',': (1000, 'xfy'),
@@ -243,7 +242,13 @@ OPERATORS = {
     'is': (700, 'xfx'),
     '+': (500, 'yfx'),
     '-': (500, 'yfx'),
+    '*': (400, 'yfx'),
+    '=:=': (700, 'xfx'),
+    '=\\=': (700, 'xfx'),
+    '>': (700, 'xfx'),
     '>=': (700, 'xfx'),
+    '<': (700, 'xfx'),
+    '=<': (700, 'xfx'),
     '\\+': (900, 'fy'),
 }
 
@@ -422,7 +427,9 @@ def parse(*term_strs):
     rvs.append(scope)
     return tuple(rvs)
 
-def unparse(term, scope):
+def unparse(term, scope, printing=None):
+    if printing is None:
+        printing = set()
     term = resolve_variable(term)
     if term_is_atom(term, LIST_NIL):
         return '[]'
@@ -434,15 +441,23 @@ def unparse(term, scope):
             n = resolve_variable(n.subterms[1])
         tail = n
         if term_is_atom(tail, LIST_NIL):
-            return '[%s]' % ','.join(unparse(p, scope) for p in parts)
+            return '[%s]' % ','.join(unparse_recurse(p, scope, printing, term) for p in parts)
         else:
-            return '[%s|%s]' % (','.join(unparse(p, scope) for p in parts), unparse(tail, scope))
+            return '[%s|%s]' % (','.join(unparse_recurse(p, scope, printing, term) for p in parts), unparse_recurse(tail, scope, printing, term))
+    elif term_is_operator(term) and len(term.subterms) == 2:
+        prec, type = OPERATORS[term.name]
+        lhs, rhs = term.subterms
+        return '(%s %s %s)' % (unparse_recurse(lhs, scope, printing, term), term.name, unparse_recurse(rhs, scope, printing, term))
+    elif term_is_operator(term) and len(term.subterms) == 1:
+        prec, type = OPERATORS[term.name]
+        rhs = term.subterms[0]
+        return '(%s %s)' % (term.name, unparse_recurse(rhs, scope, printing, term))
     elif term_is_operator(term):
         prec, type = OPERATORS[term.name]
         lhs, rhs = term.subterms
-        return '%s %s %s' % (unparse(lhs, scope), term.name, unparse(rhs, scope))
+        return '(%s %s %s)' % (unparse_recurse(lhs, scope, printing, term), term.name, unparse_recurse(rhs, scope, printing, term))
     elif isinstance(term, Compound):
-        return '%s(%s)' % (term.name, ', '.join('%s' % unparse(x, scope) for x in term.subterms))
+        return '%s(%s)' % (term.name, ', '.join('%s' % unparse_recurse(x, scope, printing, term) for x in term.subterms))
     elif isinstance(term, Variable):
         return scope.get_name(term)
     elif isinstance(term, Integer):
@@ -451,6 +466,14 @@ def unparse(term, scope):
         return term.name
     else:
         return '???'
+
+def unparse_recurse(term, scope, printing, recursing_on):
+    if recursing_on in printing or len(printing) > 10:
+        return '...'
+    printing.add(recursing_on)
+    rv = unparse(term, scope, printing)
+    printing.remove(recursing_on)
+    return rv
 
 def resolve_variable(v):
     if not isinstance(v, Variable):
@@ -508,10 +531,6 @@ def bind(v, t):
 def unbind_all(bound_vars):
     for v in bound_vars:
         v.binding = None
-
-def map_bound_vars(bound_vars, term):
-    vars = set(term.get_vars())
-    return set([v for v in vars if v.binding is not None])
 
 def unify_subterms(s1, s2):
     bound_vars = set()
@@ -624,6 +643,20 @@ def not_rule(term, database):
     else:
         return [set()]
 
+def assert_rule(term, database):
+    if not term_is_functor(term, 'assert', 1):
+        return []
+    rule = term.subterms[0]
+    database.add_rule_at_end(rule)
+    return [set()]
+
+def retractall_rule(term, database):
+    if not term_is_functor(term, 'retractall', 1):
+        return []
+    head = term.subterms[0]
+    database.remove_matching_rules(head)
+    return [set()]
+
 def evaluate_term(term):
     #print >>sys.stderr, 'evaluating: %s' % unparse(term)
     term = resolve_variable(term)
@@ -640,6 +673,8 @@ def evaluate_term(term):
             return lhs_value + rhs_value
         elif op == '-':
             return lhs_value - rhs_value
+        elif op == '*':
+            return lhs_value * rhs_value
         else:
             raise Exception('Unhandled operator: ' + op)
     else:
@@ -656,21 +691,21 @@ def is_rule(term, database):
     yield bound_vars
     unbind_all(bound_vars)
 
-def ge_rule(term, database):
-    if not term_is_functor(term, '>=', 2):
+def arithmetic_comparison_rule(test):
+    def f(term, database):
+        t1, t2 = term.subterms
+        result1 = evaluate_term(t1)
+        result2 = evaluate_term(t2)
+        if test(result1, result2):
+            return [set()]
         return []
-    t1, t2 = term.subterms
-    result1 = evaluate_term(t1)
-    result2 = evaluate_term(t2)
-    if result1 >= result2:
-        return [set()]
-    return []
+    return f
 
 def display_rule(term, database):
     if not term_is_functor(term, 'display', 1):
         return []
     arg = resolve_variable(term.subterms[0])
-    print arg,
+    print unparse(arg, Scope()),
     return [set()]
 
 def nl_rule(term, database):
@@ -721,7 +756,7 @@ def compile_rule(rule_term):
         if bound_vars is None:
             return
         for more_bound_vars in prove(body, database):
-            yield map_bound_vars(bound_vars.union(more_bound_vars), term)
+            yield bound_vars.union(more_bound_vars)
         unbind_all(bound_vars)
     return f
 
@@ -731,45 +766,80 @@ class Database(object):
         self.register_builtins()
 
     def register_builtins(self):
-        self.register(('=', 2), equals_rule)
-        self.register((',', 2), comma_rule)
-        self.register((';', 2), semicolon_rule)
-        self.register(('true', 0), true_rule)
-        self.register(('fail', 0), fail_rule)
-        self.register(('\\+', 1), not_rule)
-        self.register(('is', 2), is_rule)
-        self.register(('>=', 2), ge_rule)
-        self.register(('display', 1), display_rule)
-        self.register(('nl', 0), nl_rule)
-        self.register(('findall', 3), findall_rule)
-        self.register(('var', 1), var_rule)
-        self.register(('integer', 1), integer_rule)
+        self.register_at_end(('=', 2), '_ = _', equals_rule)
+        self.register_at_end((',', 2), '_ , _', comma_rule)
+        self.register_at_end((';', 2), '_ ; _', semicolon_rule)
+        self.register_at_end(('true', 0), 'true', true_rule)
+        self.register_at_end(('fail', 0), 'fail', fail_rule)
+        self.register_at_end(('\\+', 1), '\\+ _', not_rule)
+        self.register_at_end(('assert', 1), 'assert(_)', assert_rule)
+        self.register_at_end(('retractall', 1), 'retractall(_)', retractall_rule)
+        self.register_at_end(('is', 2), '_ is _', is_rule)
+        self.register_at_end(('=:=', 2), '_ =:= _', arithmetic_comparison_rule(lambda a,b: a == b))
+        self.register_at_end(('=\\=', 2), '_ =\\= _', arithmetic_comparison_rule(lambda a,b: a != b))
+        self.register_at_end(('>=', 2), '_ >= _', arithmetic_comparison_rule(lambda a,b: a >= b))
+        self.register_at_end(('>', 2), '_ > _', arithmetic_comparison_rule(lambda a,b: a > b))
+        self.register_at_end(('=<', 2), '_ =< _', arithmetic_comparison_rule(lambda a,b: a <= b))
+        self.register_at_end(('<', 2), '_ < _', arithmetic_comparison_rule(lambda a,b: a < b))
+        self.register_at_end(('display', 1), 'display(_)', display_rule)
+        self.register_at_end(('nl', 0), 'nl', nl_rule)
+        self.register_at_end(('findall', 3), 'findall(_, _, _)', findall_rule)
+        self.register_at_end(('var', 1), 'var(_)', var_rule)
+        self.register_at_end(('integer', 1), 'integer(_)', integer_rule)
 
-    def register(self, functor, rules):
+    def register_block(self, functor, rule_pairs):
         if functor in self.rule_index:
             raise Exception('Cannot override existing rule for %s' % (functor,))
-        if type(rules) is not list:
-            rules = [rules]
-        self.rule_index[functor] = rules
+        self.rule_index[functor] = rule_pairs
+
+    def register_at_end(self, functor, head, rule):
+        if functor not in self.rule_index:
+            self.rule_index[functor] = []
+        self.rule_index[functor].append((head, rule))
+
+    def check_and_compile_rule(self, rule):
+        if type(rule) is str:
+            rule, _ = parse(rule)
+        else:
+            rule = rule.copy_to_new_scope(Scope())
+        if not term_is_functor(rule, ':-', 2):
+            rule = Compound(':-', [rule, Atom('true')])
+        head = rule.subterms[0]
+        functor = get_functor(head)
+        if functor is None:
+            raise Exception('Cannot make a rule with head %s' % (head,))
+        compiled_rule = compile_rule(rule)
+        return functor, head, compiled_rule
 
     def add_rules(self, rules):
         functor_map = {}
         for rule in rules:
-            if str(rule):
-                rule, scope = parse(rule)
-            if not term_is_functor(rule, ':-', 2):
-                rule = Compound(':-', [rule, Atom('true')])
-            head = rule.subterms[0]
-            functor = get_functor(head)
-            if functor is None:
-                raise Exception('Cannot make a rule with head %s' % (head,))
-            compiled_rule = compile_rule(rule)
+            functor, head, compiled_rule = self.check_and_compile_rule(rule)
             if functor not in functor_map:
                 functor_map[functor] = []
-            functor_map[functor].append(compiled_rule)
+            functor_map[functor].append((head, compiled_rule))
 
-        for functor, rules in functor_map.items():
-            self.register(functor, rules)
+        for functor, rule_pairs in functor_map.items():
+            self.register_block(functor, rule_pairs)
+
+    def add_rule_at_end(self, rule):
+        functor, head, compiled_rule = self.check_and_compile_rule(rule)
+        self.register_at_end(functor, head, compiled_rule)
+
+    def remove_matching_rules(self, head):
+        functor = get_functor(head)
+        if functor not in self.rule_index:
+            return
+
+        new_rulepairs = []
+        for rule_head, rule in self.rule_index[functor]:
+            bound_vars = unify(rule_head, head)
+            if bound_vars is None:
+                new_rulepairs.append((rule_head, rule))
+            else:
+                unbind_all(bound_vars)
+                print 'retracted', rule_head
+        self.rule_index[functor] = new_rulepairs
 
     def get_rules(self, functor):
         if functor not in self.rule_index:
@@ -862,11 +932,14 @@ def prove(goal, database):
         B = [[1,1,1]], X = 1
         >>> prove_str('findall(S, triplicate(X, S), B), X = 1, B = [[2,2,2]]', db)
         B = [[2,2,2]], X = 1
+        >>> prove_str('assert(human(socrates)), assert(human(pythagoras)), human(X)', db)
+        X = socrates
+        X = pythagoras
     """
     #print >>sys.stderr, "proving...", unparse(goal)
     functor = get_functor(goal)
 
-    for r in database.get_rules(functor):
+    for _, r in database.get_rules(functor):
         for bound_vars in r(goal, database):
             yield bound_vars
 
@@ -886,9 +959,14 @@ def prove_interactively(goal, scope, database):
     print '(%d solutions)' % solution_num
 
 def main():
+    query_str = ' '.join(sys.argv[1:])
+    if query_str == '':
+        print 'Please enter a query on the command line (you might need quotes around it)'
+        print 'E.g.   qolog.py   assert(prime(3)), assert(prime(5)), assert(prime(7)), findall(S, (prime(P), prime(Q), S is P*Q), B)'
+        return
     db = Database()
     db.add_rules(LIST_RULES)
-    goal, scope = parse("X = [Y], Y = [X]")
+    goal, scope = parse(query_str)
     print 'Proving:', unparse(goal, scope)
     prove_interactively(goal, scope, db)
 
