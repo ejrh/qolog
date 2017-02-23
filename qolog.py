@@ -142,7 +142,6 @@ SIMPLE_CHARS = WORD_CHARS + '(['
 class Tokeniser(object):
     def __init__(self, term_str):
         self.term_str = term_str
-        #print >>sys.stderr, '[[%s]]' % term_str
         self.pos = 0
         self.cached = None
 
@@ -153,7 +152,6 @@ class Tokeniser(object):
 
     def next(self):
         token = self.do_next()
-        #print >>sys.stderr, '[%s]' % token
         return token
 
     def do_next(self):
@@ -234,26 +232,9 @@ def tokenise_str(input_str):
         tokens.append(token)
     return tokens
 
-OPERATORS = {
-    '=': (700, 'xfx'),
-    ',': (1000, 'xfy'),
-    ';': (1100, 'xfy'),
-    ':-': (1200, 'xfx'),
-    'is': (700, 'xfx'),
-    '+': (500, 'yfx'),
-    '-': (500, 'yfx'),
-    '*': (400, 'yfx'),
-    '=:=': (700, 'xfx'),
-    '=\\=': (700, 'xfx'),
-    '>': (700, 'xfx'),
-    '>=': (700, 'xfx'),
-    '<': (700, 'xfx'),
-    '=<': (700, 'xfx'),
-    '\\+': (900, 'fy'),
-}
-
 class Parser(object):
-    def __init__(self, term_str, scope):
+    def __init__(self, database, term_str, scope):
+        self.database = database
         self.tokeniser = Tokeniser(term_str)
         self.scope = scope
 
@@ -266,7 +247,7 @@ class Parser(object):
 
         def reduce():
             stack_oper = operator_stack.pop()
-            _, type = OPERATORS[stack_oper]
+            _, type = self.database.operators[stack_oper]
             if type in ('xfx', 'xfy', 'yfx'):
                 v2 = value_stack.pop()
                 v1 = value_stack.pop()
@@ -281,18 +262,24 @@ class Parser(object):
 
         while self.tokeniser.peek() is not None and self.tokeniser.peek() not in terminators:
             next_tok = self.tokeniser.peek()
-            if next_tok not in OPERATORS:
+            if next_tok not in self.database.operators:
                 item = self.parse_simple()
                 value_stack.append(item)
                 #print>>sys.stderr, 'push value', item
                 continue
 
             operator = self.tokeniser.next()
-            prec, type = OPERATORS[operator]
+            prec, type = self.database.operators[operator]
             while len(operator_stack) > 0:
                 stack_oper = operator_stack[-1]
-                stack_prec, stack_type = OPERATORS[stack_oper]
-                if stack_prec < prec:
+                stack_prec, stack_type = self.database.operators[stack_oper]
+                #print >>sys.stderr, "Stack: %s %s %s   Next: %s %s %s" % (stack_oper, stack_prec, stack_type, operator, prec, type)
+                if stack_type == 'xfx' and stack_prec == prec:
+                    raise SyntaxError('operator precedence clash')
+
+                if stack_type == 'yfx' and stack_prec <= prec:
+                    reduce()
+                elif stack_prec < prec:
                     reduce()
                 else:
                     break
@@ -371,63 +358,76 @@ class Parser(object):
                 name = name[:-1]
             return Atom(name)
 
-def parse(*term_strs):
+def parse(database, *term_strs):
     """
         Parse a Prolog term string into a Term object.
 
-        >>> parse('x')[0]
+        >>> db = Database()
+        >>> parse(db, 'x')[0]
         Atom('x')
-        >>> parse("'hello there'")[0]
+        >>> parse(db, "'hello there'")[0]
         Atom('hello there')
-        >>> parse('X')[0]
+        >>> parse(db, 'X')[0]
         Variable()
-        >>> parse('_X')[0]
+        >>> parse(db, '_X')[0]
         Variable()
-        >>> parse('1')[0]
+        >>> parse(db, '1')[0]
         Integer(1)
-        >>> parse('(x)')[0]
+        >>> parse(db, '(x)')[0]
         Atom('x')
-        >>> parse('f(a)')[0]
+        >>> parse(db, 'f(a)')[0]
         Compound('f', [Atom('a')])
-        >>> parse('[]')[0]
+        >>> parse(db, '[]')[0]
         Atom('[]')
-        >>> parse('X = a; X = b')[0]
+        >>> parse(db, 'X = a; X = b')[0]
         Compound(';', [Compound('=', [Variable(), Atom('a')]), Compound('=', [Variable(), Atom('b')])])
-        >>> parse('[a]')[0]
+        >>> parse(db, '[a]')[0]
         Compound('[|]', [Atom('a'), Atom('[]')])
-        >>> parse('[a|X]')[0]
+        >>> parse(db, '[a|X]')[0]
         Compound('[|]', [Atom('a'), Variable()])
-        >>> parse('f(a, 5)')[0]
+        >>> parse(db, 'f(a, 5)')[0]
         Compound('f', [Atom('a'), Integer(5)])
-        >>> parse('X = 4')[0]
+        >>> parse(db, 'X = 4')[0]
         Compound('=', [Variable(), Integer(4)])
-        >>> parse('(X = 4), f(X)')[0]
+        >>> parse(db, '(X = 4), f(X)')[0]
         Compound(',', [Compound('=', [Variable(), Integer(4)]), Compound('f', [Variable()])])
-        >>> parse('X = 4, g')[0]
+        >>> parse(db, 'X = 4, g')[0]
         Compound(',', [Compound('=', [Variable(), Integer(4)]), Atom('g')])
-        >>> parse('[X,Y]')[0]
+        >>> parse(db, '[X,Y]')[0]
         Compound('[|]', [Variable(), Compound('[|]', [Variable(), Atom('[]')])])
-        >>> parse('X is Y+2')[0]
+        >>> parse(db, 'X is Y+2')[0]
         Compound('is', [Variable(), Compound('+', [Variable(), Integer(2)])])
-        >>> parse('\+X')[0]
+        >>> parse(db, '\+X')[0]
         Compound('\\\+', [Variable()])
-        >>> parse('W , \+ X')[0]
+        >>> parse(db, 'W , \+ X')[0]
         Compound(',', [Variable(), Compound('\\\+', [Variable()])])
-        >>> parse('\+ X, W')[0]
+        >>> parse(db, '\+ X, W')[0]
         Compound(',', [Compound('\\\+', [Variable()]), Variable()])
-        >>> parse('\+ X + W')[0]
+        >>> parse(db, '\+ X + W')[0]
         Compound('\\\+', [Compound('+', [Variable(), Variable()])])
+        >>> parse(db, 'a, b, c')[0]
+        Compound(',', [Atom('a'), Compound(',', [Atom('b'), Atom('c')])])
+        >>> parse(db, 'a, b, c')[0]
+        Compound(',', [Atom('a'), Compound(',', [Atom('b'), Atom('c')])])
+        >>> parse(db, '4 - 3 + 1')[0]
+        Compound('+', [Compound('-', [Integer(4), Integer(3)]), Integer(1)])
+        >>> parse(db, '\+X = Y')[0]
+        Compound('\\\+', [Compound('=', [Variable(), Variable()])])
+        >>> parse(db, 'X = Y = Z')[0]
+        Traceback (most recent call last):
+          File "<stdin>", line 1, in ?
+        SyntaxError: operator precedence clash
     """
     scope = Scope()
     rvs = []
     for ts in term_strs:
-        p = Parser(ts, scope)
+        p = Parser(database, ts, scope)
         term = p.parse()
         rvs.append(term)
     rvs.append(scope)
     return tuple(rvs)
 
-def unparse(term, scope, printing=None):
+def unparse(database, term, scope, printing=None):
     if printing is None:
         printing = set()
     term = resolve_variable(term)
@@ -441,23 +441,19 @@ def unparse(term, scope, printing=None):
             n = resolve_variable(n.subterms[1])
         tail = n
         if term_is_atom(tail, LIST_NIL):
-            return '[%s]' % ','.join(unparse_recurse(p, scope, printing, term) for p in parts)
+            return '[%s]' % ','.join(unparse_recurse(database, p, scope, printing, term) for p in parts)
         else:
-            return '[%s|%s]' % (','.join(unparse_recurse(p, scope, printing, term) for p in parts), unparse_recurse(tail, scope, printing, term))
-    elif term_is_operator(term) and len(term.subterms) == 2:
-        prec, type = OPERATORS[term.name]
+            return '[%s|%s]' % (','.join(unparse_recurse(database, p, scope, printing, term) for p in parts), unparse_recurse(database, tail, scope, printing, term))
+    elif term_is_operator(term, database) and len(term.subterms) == 2:
+        prec, type = database.operators[term.name]
         lhs, rhs = term.subterms
-        return '(%s %s %s)' % (unparse_recurse(lhs, scope, printing, term), term.name, unparse_recurse(rhs, scope, printing, term))
-    elif term_is_operator(term) and len(term.subterms) == 1:
-        prec, type = OPERATORS[term.name]
+        return '(%s %s %s)' % (unparse_recurse(database, lhs, scope, printing, term), term.name, unparse_recurse(database, rhs, scope, printing, term))
+    elif term_is_operator(term, database) and len(term.subterms) == 1:
+        prec, type = self.database.operators[term.name]
         rhs = term.subterms[0]
-        return '(%s %s)' % (term.name, unparse_recurse(rhs, scope, printing, term))
-    elif term_is_operator(term):
-        prec, type = OPERATORS[term.name]
-        lhs, rhs = term.subterms
-        return '(%s %s %s)' % (unparse_recurse(lhs, scope, printing, term), term.name, unparse_recurse(rhs, scope, printing, term))
+        return '(%s %s)' % (term.name, unparse_recurse(database, rhs, scope, printing, term))
     elif isinstance(term, Compound):
-        return '%s(%s)' % (term.name, ', '.join('%s' % unparse_recurse(x, scope, printing, term) for x in term.subterms))
+        return '%s(%s)' % (term.name, ', '.join('%s' % unparse_recurse(database, x, scope, printing, term) for x in term.subterms))
     elif isinstance(term, Variable):
         return scope.get_name(term)
     elif isinstance(term, Integer):
@@ -467,11 +463,11 @@ def unparse(term, scope, printing=None):
     else:
         return '???'
 
-def unparse_recurse(term, scope, printing, recursing_on):
+def unparse_recurse(database, term, scope, printing, recursing_on):
     if recursing_on in printing or len(printing) > 10:
         return '...'
     printing.add(recursing_on)
-    rv = unparse(term, scope, printing)
+    rv = unparse(database, term, scope, printing)
     printing.remove(recursing_on)
     return rv
 
@@ -512,10 +508,10 @@ def term_is_functor(term, name, arity):
         return False
     return term.name == name and len(term.subterms) == arity
 
-def term_is_operator(term):
+def term_is_operator(term, database):
     if not isinstance(term, Compound):
         return False
-    return term.name in OPERATORS
+    return term.name in database.operators
 
 def get_functor(term):
     if isinstance(term, Compound):
@@ -548,25 +544,26 @@ def unify(t1, t2):
         be bound; a set of newly-bound variables is returned.  If the terms cannot be unified,
         the variables are unchanged and None is returned.
 
-        >>> unify_strs('x', 'y')
-        >>> unify_strs('x', 'x')
+        >>> db = Database()
+        >>> unify_strs(db, 'x', 'y')
+        >>> unify_strs(db, 'x', 'x')
         []
-        >>> unify_strs('X', 'y')
+        >>> unify_strs(db, 'X', 'y')
         ['X']
-        >>> unify_strs('X', 'Y')
+        >>> unify_strs(db, 'X', 'Y')
         ['X']
-        >>> unify_strs('X', 'X')
+        >>> unify_strs(db, 'X', 'X')
         []
-        >>> unify_strs('X', 'f(a)')
+        >>> unify_strs(db, 'X', 'f(a)')
         ['X']
-        >>> unify_strs('f(X)', 'f(a)')
+        >>> unify_strs(db, 'f(X)', 'f(a)')
         ['X']
-        >>> unify_strs('f(X, X)', 'f(a, b)')
-        >>> unify_strs('f(X, Y)', 'f(a, b)')
+        >>> unify_strs(db, 'f(X, X)', 'f(a, b)')
+        >>> unify_strs(db, 'f(X, Y)', 'f(a, b)')
         ['X', 'Y']
-        >>> unify_strs('f(X, X)', 'f(a, a)')
+        >>> unify_strs(db, 'f(X, X)', 'f(a, a)')
         ['X']
-        >>> unify_strs('[X,Y]', 'Z')
+        >>> unify_strs(db, '[X,Y]', 'Z')
         ['Z']
     """
     t1 = resolve_variable(t1)
@@ -583,8 +580,8 @@ def unify(t1, t2):
         return unify_subterms(t1.subterms, t2.subterms)
     return None
 
-def unify_strs(str1, str2):
-    t1, t2, scope = parse(str1, str2)
+def unify_strs(database, str1, str2):
+    t1, t2, scope = parse(database, str1, str2)
     unifications = unify(t1, t2)
     if unifications is None:
         return None
@@ -658,7 +655,6 @@ def retractall_rule(term, database):
     return [set()]
 
 def evaluate_term(term):
-    #print >>sys.stderr, 'evaluating: %s' % unparse(term)
     term = resolve_variable(term)
     if isinstance(term, Integer):
         return term.value
@@ -705,7 +701,7 @@ def display_rule(term, database):
     if not term_is_functor(term, 'display', 1):
         return []
     arg = resolve_variable(term.subterms[0])
-    print unparse(arg, Scope()),
+    print unparse(database, arg, Scope()),
     return [set()]
 
 def nl_rule(term, database):
@@ -722,7 +718,6 @@ def findall_rule(term, database):
     for bound_vars in prove(goal, database):
         result = temp.copy_to_new_scope(Scope())
         results.append(result)
-    #print >>sys.stderr, 'results', results
     bag = make_list(results)
     unify(bag_var, bag)
     bound_vars = {bag_var}
@@ -763,9 +758,26 @@ def compile_rule(rule_term):
 class Database(object):
     def __init__(self):
         self.rule_index = {}
+        self.operators = {}
         self.register_builtins()
 
     def register_builtins(self):
+        self.register_operator('=', 700, 'xfx')
+        self.register_operator(',', 1000, 'xfy')
+        self.register_operator(';', 1100, 'xfy')
+        self.register_operator(':-', 1200, 'xfx')
+        self.register_operator('is', 700, 'xfx')
+        self.register_operator('+', 500, 'yfx')
+        self.register_operator('-', 500, 'yfx')
+        self.register_operator('*', 400, 'yfx')
+        self.register_operator('=:=', 700, 'xfx')
+        self.register_operator('=\\=', 700, 'xfx')
+        self.register_operator('>', 700, 'xfx')
+        self.register_operator('>=', 700, 'xfx')
+        self.register_operator('<', 700, 'xfx')
+        self.register_operator('=<', 700, 'xfx')
+        self.register_operator('\\+', 900, 'fy')
+
         self.register_at_end(('=', 2), '_ = _', equals_rule)
         self.register_at_end((',', 2), '_ , _', comma_rule)
         self.register_at_end((';', 2), '_ ; _', semicolon_rule)
@@ -787,6 +799,9 @@ class Database(object):
         self.register_at_end(('var', 1), 'var(_)', var_rule)
         self.register_at_end(('integer', 1), 'integer(_)', integer_rule)
 
+    def register_operator(self, name, precedence, type):
+        self.operators[name] = precedence, type
+
     def register_block(self, functor, rule_pairs):
         if functor in self.rule_index:
             raise Exception('Cannot override existing rule for %s' % (functor,))
@@ -799,7 +814,7 @@ class Database(object):
 
     def check_and_compile_rule(self, rule):
         if type(rule) is str:
-            rule, _ = parse(rule)
+            rule, _ = parse(self, rule)
         else:
             rule = rule.copy_to_new_scope(Scope())
         if not term_is_functor(rule, ':-', 2):
@@ -859,8 +874,8 @@ LIST_RULES = [
     'concat([H|A], B, [H|C]) :- concat(A, B, C)',
 ]
 
-def bound_vars_str(vars, scope):
-    return ', '.join('%s = %s' % (str(v), unparse(t, scope)) for v,t in sorted(scope.var_mappings(vars).items()))
+def bound_vars_str(database, vars, scope):
+    return ', '.join('%s = %s' % (str(v), unparse(database, t, scope)) for v,t in sorted(scope.var_mappings(vars).items()))
 
 def prove(goal, database):
     """
@@ -936,7 +951,6 @@ def prove(goal, database):
         X = socrates
         X = pythagoras
     """
-    #print >>sys.stderr, "proving...", unparse(goal)
     functor = get_functor(goal)
 
     for _, r in database.get_rules(functor):
@@ -944,15 +958,15 @@ def prove(goal, database):
             yield bound_vars
 
 def prove_str(goal_str, database):
-    goal, scope = parse(goal_str)
+    goal, scope = parse(database, goal_str)
     for bindings in prove(goal, database):
-        print bound_vars_str(bindings, scope)
+        print bound_vars_str(database, bindings, scope)
 
 def prove_interactively(goal, scope, database):
     solution_num = 0
     for bound_vars in prove(goal, database):
         solution_num += 1
-        print '%d.  %s' % (solution_num, bound_vars_str(bound_vars, scope))
+        print '%d.  %s' % (solution_num, bound_vars_str(database, bound_vars, scope))
         if solution_num >= 100:
             print '(too many solutions)'
             break
@@ -966,8 +980,8 @@ def main():
         return
     db = Database()
     db.add_rules(LIST_RULES)
-    goal, scope = parse(query_str)
-    print 'Proving:', unparse(goal, scope)
+    goal, scope = parse(db, query_str)
+    print 'Proving:', unparse(db, goal, scope)
     prove_interactively(goal, scope, db)
 
 if __name__ == '__main__':
