@@ -136,7 +136,7 @@ def make_list(parts, tail=None):
 
 ATOM_CHARS = string.ascii_lowercase + '\''
 WORD_CHARS = string.letters + string.digits + '_'
-OPERATOR_CHARS = ',=:->\\+'
+OPERATOR_CHARS = ',=:-<>\\+'
 SIMPLE_CHARS = WORD_CHARS + '(['
 
 class Tokeniser(object):
@@ -422,7 +422,11 @@ def parse(database, *term_strs):
     rvs = []
     for ts in term_strs:
         p = Parser(database, ts, scope)
-        term = p.parse()
+        try:
+            term = p.parse()
+        except SyntaxError:
+            print 'While parsing: %s' % ts
+            raise
         rvs.append(term)
     rvs.append(scope)
     return tuple(rvs)
@@ -719,8 +723,9 @@ def findall_rule(term, database):
         result = temp.copy_to_new_scope(Scope())
         results.append(result)
     bag = make_list(results)
-    unify(bag_var, bag)
-    bound_vars = {bag_var}
+    bound_vars = unify(bag_var, bag)
+    if bound_vars is None:
+        return
     yield bound_vars
     unbind_all(bound_vars)
 
@@ -739,6 +744,24 @@ def integer_rule(term, database):
     if isinstance(term, Integer):
         return [set()]
     return []
+
+def between_rule(term, database):
+    #if not term_is_functor(term, 'between', 3):
+    #    return
+    low, high, value = term.subterms
+    low = resolve_variable(low)
+    high = resolve_variable(high)
+    if not isinstance(low, Integer) or not isinstance(high, Integer):
+        return
+    value = resolve_variable(value)
+    if isinstance(value, Integer):
+        if low.value <= value.value <= high.value:
+            yield set()
+        return
+    for i in range(low.value, high.value+1):
+        bound_vars = unify(value, Integer(i))
+        yield bound_vars
+        unbind_all(bound_vars)
 
 def compile_rule(rule_term):
     if not term_is_functor(rule_term, ':-', 2):
@@ -798,6 +821,7 @@ class Database(object):
         self.register_at_end(('findall', 3), 'findall(_, _, _)', findall_rule)
         self.register_at_end(('var', 1), 'var(_)', var_rule)
         self.register_at_end(('integer', 1), 'integer(_)', integer_rule)
+        self.register_at_end(('between', 3), 'between(_, _, _)', between_rule)
 
     def register_operator(self, name, precedence, type):
         self.operators[name] = precedence, type
@@ -866,12 +890,18 @@ LIST_RULES = [
     'length([_|T], X) :- var(X), length(T, X0), X is X0 + 1',
     'length([_|T], X) :- integer(X), X >= 0, Xm1 is X - 1, length(T, Xm1)',
     'member(M, L) :- L = [M|L2]',
-    'member(M, L) :- L = [X|L2], member(M, L2)',
+    'member(M, L) :- L = [_|L2], member(M, L2)',
     'reverse(X, Y) :- reverse(X, [], Y, Y)',
     'reverse([], A, A, []) :- true',
     'reverse([A|B], C, D, [_|E]) :- reverse(B, [A|C], D, E)',
     'concat([], B, B) :- true',
     'concat([H|A], B, [H|C]) :- concat(A, B, C)',
+]
+
+ARITHMETIC_RULES = [
+#    'between(L, H, V) :- integer(V), L =< V, V =< H',
+#    'between(L, H, V) :- var(V), L =< H, V = L',
+#    'between(L, H, V) :- var(V), L < H, Lp1 is L + 1, between(Lp1, H, V)',
 ]
 
 def bound_vars_str(database, vars, scope):
@@ -980,6 +1010,7 @@ def main():
         return
     db = Database()
     db.add_rules(LIST_RULES)
+    db.add_rules(ARITHMETIC_RULES)
     goal, scope = parse(db, query_str)
     print 'Proving:', unparse(db, goal, scope)
     prove_interactively(goal, scope, db)
