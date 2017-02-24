@@ -453,7 +453,7 @@ def unparse(database, term, scope, printing=None):
         lhs, rhs = term.subterms
         return '(%s %s %s)' % (unparse_recurse(database, lhs, scope, printing, term), term.name, unparse_recurse(database, rhs, scope, printing, term))
     elif term_is_operator(term, database) and len(term.subterms) == 1:
-        prec, type = self.database.operators[term.name]
+        prec, type = database.operators[term.name]
         rhs = term.subterms[0]
         return '(%s %s)' % (term.name, unparse_recurse(database, rhs, scope, printing, term))
     elif isinstance(term, Compound):
@@ -980,6 +980,13 @@ def prove(goal, database):
         >>> prove_str('assert(human(socrates)), assert(human(pythagoras)), human(X)', db)
         X = socrates
         X = pythagoras
+        >>> prove_str('''assert(divides(P, P) :- P > 0), \
+                assert((divides(P, Q) :- P > 0, Q > P, QmP is Q - P, divides(P, QmP))), \
+                assert(prime(P) :- known_prime(P)), \
+                assert((prime(P) :- \+known_prime(P), findall(_, (between(2, P, D), known_prime(D), divides(D, P)), []), assert(known_prime(P) :- true), true)), \
+                assert(known_prime(2) :- true), \
+                findall(P, (between(2, 25, P), prime(P)), S)''', db)
+        S = [2,3,5,7,11,13,17,19,23]
     """
     functor = get_functor(goal)
 
