@@ -21,7 +21,7 @@ class Atom(Term):
         return self.name
 
 class Compound(Term):
-    def __init__(self, name, subterms):
+    def __init__(self, name, *subterms):
         self.name = name
         self.subterms = subterms
 
@@ -32,10 +32,10 @@ class Compound(Term):
         return vars
 
     def copy_to_new_scope(self, scope):
-        return Compound(self.name, [s.copy_to_new_scope(scope) for s in self.subterms])
+        return Compound(self.name, *[s.copy_to_new_scope(scope) for s in self.subterms])
 
     def __repr__(self):
-        return 'Compound(%s, [%s])' % (repr(self.name), ', '.join(repr(x) for x in self.subterms))
+        return 'Compound(%s, %s)' % (repr(self.name), ', '.join(repr(x) for x in self.subterms))
 
     def __str__(self):
         return '%s(%s)' % (self.name, ', '.join('%s' % resolve_variable(x) for x in self.subterms))
@@ -120,18 +120,18 @@ def make_list(parts, tail=None):
         >>> make_list([])
         Atom('[]')
         >>> make_list([Atom('hello')])
-        Compound('[|]', [Atom('hello'), Atom('[]')])
+        Compound('[|]', Atom('hello'), Atom('[]'))
         >>> make_list([], Atom('[]'))
         Atom('[]')
-        >>> make_list([], Compound('[|]', [Atom('hello'), Atom('[]')]))
-        Compound('[|]', [Atom('hello'), Atom('[]')])
+        >>> make_list([], Compound('[|]', Atom('hello'), Atom('[]')))
+        Compound('[|]', Atom('hello'), Atom('[]'))
     """
     if tail is None:
         lst = Atom(LIST_NIL)
     else:
         lst = tail
     for p in reversed(parts):
-        lst = Compound(LIST_CONS, [p, lst])
+        lst = Compound(LIST_CONS, p, lst)
     return lst
 
 ATOM_CHARS = string.ascii_lowercase + '\''
@@ -251,10 +251,10 @@ class Parser(object):
             if type in ('xfx', 'xfy', 'yfx'):
                 v2 = value_stack.pop()
                 v1 = value_stack.pop()
-                item = Compound(stack_oper, [v1, v2])
+                item = Compound(stack_oper, v1, v2)
             elif type in ('fx', 'xf', 'fy', 'yf'):
                 v1 = value_stack.pop()
-                item = Compound(stack_oper, [v1])
+                item = Compound(stack_oper, v1)
             else:
                 raise Exception('Unhandled operator type ' + type)
             value_stack.append(item)
@@ -350,7 +350,7 @@ class Parser(object):
                 self.tokeniser.next()
                 subterms.append(self.parse(',)'))
             self.tokeniser.next()
-            return Compound(name, subterms)
+            return Compound(name, *subterms)
         else:
             if name[0] == "'":
                 name = name[1:]
@@ -376,43 +376,43 @@ def parse(database, *term_strs):
         >>> parse(db, '(x)')[0]
         Atom('x')
         >>> parse(db, 'f(a)')[0]
-        Compound('f', [Atom('a')])
+        Compound('f', Atom('a'))
         >>> parse(db, '[]')[0]
         Atom('[]')
         >>> parse(db, 'X = a; X = b')[0]
-        Compound(';', [Compound('=', [Variable(), Atom('a')]), Compound('=', [Variable(), Atom('b')])])
+        Compound(';', Compound('=', Variable(), Atom('a')), Compound('=', Variable(), Atom('b')))
         >>> parse(db, '[a]')[0]
-        Compound('[|]', [Atom('a'), Atom('[]')])
+        Compound('[|]', Atom('a'), Atom('[]'))
         >>> parse(db, '[a|X]')[0]
-        Compound('[|]', [Atom('a'), Variable()])
+        Compound('[|]', Atom('a'), Variable())
         >>> parse(db, 'f(a, 5)')[0]
-        Compound('f', [Atom('a'), Integer(5)])
+        Compound('f', Atom('a'), Integer(5))
         >>> parse(db, 'X = 4')[0]
-        Compound('=', [Variable(), Integer(4)])
+        Compound('=', Variable(), Integer(4))
         >>> parse(db, '(X = 4), f(X)')[0]
-        Compound(',', [Compound('=', [Variable(), Integer(4)]), Compound('f', [Variable()])])
+        Compound(',', Compound('=', Variable(), Integer(4)), Compound('f', Variable()))
         >>> parse(db, 'X = 4, g')[0]
-        Compound(',', [Compound('=', [Variable(), Integer(4)]), Atom('g')])
+        Compound(',', Compound('=', Variable(), Integer(4)), Atom('g'))
         >>> parse(db, '[X,Y]')[0]
-        Compound('[|]', [Variable(), Compound('[|]', [Variable(), Atom('[]')])])
+        Compound('[|]', Variable(), Compound('[|]', Variable(), Atom('[]')))
         >>> parse(db, 'X is Y+2')[0]
-        Compound('is', [Variable(), Compound('+', [Variable(), Integer(2)])])
+        Compound('is', Variable(), Compound('+', Variable(), Integer(2)))
         >>> parse(db, '\+X')[0]
-        Compound('\\\+', [Variable()])
+        Compound('\\\+', Variable())
         >>> parse(db, 'W , \+ X')[0]
-        Compound(',', [Variable(), Compound('\\\+', [Variable()])])
+        Compound(',', Variable(), Compound('\\\+', Variable()))
         >>> parse(db, '\+ X, W')[0]
-        Compound(',', [Compound('\\\+', [Variable()]), Variable()])
+        Compound(',', Compound('\\\+', Variable()), Variable())
         >>> parse(db, '\+ X + W')[0]
-        Compound('\\\+', [Compound('+', [Variable(), Variable()])])
+        Compound('\\\+', Compound('+', Variable(), Variable()))
         >>> parse(db, 'a, b, c')[0]
-        Compound(',', [Atom('a'), Compound(',', [Atom('b'), Atom('c')])])
+        Compound(',', Atom('a'), Compound(',', Atom('b'), Atom('c')))
         >>> parse(db, 'a, b, c')[0]
-        Compound(',', [Atom('a'), Compound(',', [Atom('b'), Atom('c')])])
+        Compound(',', Atom('a'), Compound(',', Atom('b'), Atom('c')))
         >>> parse(db, '4 - 3 + 1')[0]
-        Compound('+', [Compound('-', [Integer(4), Integer(3)]), Integer(1)])
+        Compound('+', Compound('-', Integer(4), Integer(3)), Integer(1))
         >>> parse(db, '\+X = Y')[0]
-        Compound('\\\+', [Compound('=', [Variable(), Variable()])])
+        Compound('\\\+', Compound('=', Variable(), Variable()))
         >>> parse(db, 'X = Y = Z')[0]
         Traceback (most recent call last):
           File "<stdin>", line 1, in ?
@@ -842,7 +842,7 @@ class Database(object):
         else:
             rule = rule.copy_to_new_scope(Scope())
         if not term_is_functor(rule, ':-', 2):
-            rule = Compound(':-', [rule, Atom('true')])
+            rule = Compound(':-', rule, Atom('true'))
         head = rule.subterms[0]
         functor = get_functor(head)
         if functor is None:
