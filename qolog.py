@@ -64,7 +64,7 @@ def unify(t1, t2):
     return None
 
 def unify_strs(database, str1, str2):
-    t1, t2, scope = parse(database, str1, str2)
+    t1, t2, scope = parse(database.operators, str1, str2)
     unifications = unify(t1, t2)
     if unifications is None:
         return None
@@ -220,7 +220,7 @@ def display_rule(term, database):
     if not term.is_functor('display', 1):
         return []
     arg = term.subterms[0].resolve()
-    print unparse(database, arg, Scope()),
+    print unparse(database.operators, arg, Scope()),
     return [set()]
 
 def nl_rule(term, database):
@@ -354,7 +354,7 @@ class Database(object):
 
     def check_and_compile_rule(self, rule):
         if type(rule) is str:
-            rule, _ = parse(self, rule)
+            rule, _ = parse(self.operators, rule)
         else:
             rule = rule.copy_to_new_scope(Scope())
         if not rule.is_functor(':-', 2):
@@ -421,7 +421,7 @@ ARITHMETIC_RULES = [
 ]
 
 def bound_vars_str(database, vars, scope):
-    return ', '.join('%s = %s' % (str(v), unparse(database, t, scope)) for v,t in sorted(scope.var_mappings(vars).items()))
+    return ', '.join('%s = %s' % (str(v), unparse(database.operators, t, scope)) for v,t in sorted(scope.var_mappings(vars).items()))
 
 def prove(goal, database):
     """
@@ -513,7 +513,7 @@ def prove(goal, database):
             yield bound_vars
 
 def prove_str(goal_str, database):
-    goal, scope = parse(database, goal_str)
+    goal, scope = parse(database.operators, goal_str)
     for bindings in prove(goal, database):
         print bound_vars_str(database, bindings, scope)
 
@@ -536,8 +536,8 @@ def main():
     db = Database()
     db.add_rules(LIST_RULES)
     db.add_rules(ARITHMETIC_RULES)
-    goal, scope = parse(db, query_str)
-    print 'Proving:', unparse(db, goal, scope)
+    goal, scope = parse(db.operators, query_str)
+    print 'Proving:', unparse(db.operators, goal, scope)
     t0 = time.time()
     prove_interactively(goal, scope, db)
     print 'Ran for %0.2f seconds' % (time.time() - t0)

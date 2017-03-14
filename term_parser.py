@@ -101,8 +101,8 @@ def tokenise_str(input_str):
     return tokens
 
 class Parser(object):
-    def __init__(self, database, term_str, scope):
-        self.database = database
+    def __init__(self, operators, term_str, scope):
+        self.operators = operators
         self.tokeniser = Tokeniser(term_str)
         self.scope = scope
 
@@ -115,7 +115,7 @@ class Parser(object):
 
         def reduce():
             stack_oper = operator_stack.pop()
-            _, type = self.database.operators[stack_oper]
+            _, type = self.operators[stack_oper]
             if type in ('xfx', 'xfy', 'yfx'):
                 v2 = value_stack.pop()
                 v1 = value_stack.pop()
@@ -130,17 +130,17 @@ class Parser(object):
 
         while self.tokeniser.peek() is not None and self.tokeniser.peek() not in terminators:
             next_tok = self.tokeniser.peek()
-            if next_tok not in self.database.operators:
+            if next_tok not in self.operators:
                 item = self.parse_simple()
                 value_stack.append(item)
                 #print>>sys.stderr, 'push value', item
                 continue
 
             operator = self.tokeniser.next()
-            prec, type = self.database.operators[operator]
+            prec, type = self.operators[operator]
             while len(operator_stack) > 0:
                 stack_oper = operator_stack[-1]
-                stack_prec, stack_type = self.database.operators[stack_oper]
+                stack_prec, stack_type = self.operators[stack_oper]
                 #print >>sys.stderr, "Stack: %s %s %s   Next: %s %s %s" % (stack_oper, stack_prec, stack_type, operator, prec, type)
                 if stack_type == 'xfx' and stack_prec == prec:
                     raise SyntaxError('operator precedence clash')
@@ -226,62 +226,78 @@ class Parser(object):
                 name = name[:-1]
             return Atom(name)
 
-def parse(database, *term_strs):
+def parse(operators, *term_strs):
     """
         Parse a Prolog term string into a Term object.
 
-        >>> db = Database()
-        >>> parse(db, 'x')[0]
+        >>> ops = {}
+        >>> ops['='] = (700, 'xfx')
+        >>> ops[','] = (1000, 'xfy')
+        >>> ops[';'] = (1100, 'xfy')
+        >>> ops[':-'] = (1200, 'xfx')
+        >>> ops['is'] = (700, 'xfx')
+        >>> ops['+'] = (500, 'yfx')
+        >>> ops['-'] = (500, 'yfx')
+        >>> ops['*'] = (400, 'yfx')
+        >>> ops['=:='] = (700, 'xfx')
+        >>> ops['=\\='] = (700, 'xfx')
+        >>> ops['>'] = (700, 'xfx')
+        >>> ops['>='] = (700, 'xfx')
+        >>> ops['<'] = (700, 'xfx')
+        >>> ops['=<'] = (700, 'xfx')
+        >>> ops['\\+'] = (900, 'fy')
+
+        >>> parse(ops, 'x')[0]
         Atom('x')
-        >>> parse(db, "'hello there'")[0]
+        >>> parse(ops, "'hello there'")[0]
         Atom('hello there')
-        >>> parse(db, 'X')[0]
+        >>> parse(ops, 'X')[0]
         Variable()
-        >>> parse(db, '_X')[0]
+        >>> parse(ops, '_X')[0]
         Variable()
-        >>> parse(db, '1')[0]
+        >>> parse(ops, '1')[0]
         Integer(1)
-        >>> parse(db, '(x)')[0]
+        >>> parse(ops, '(x)')[0]
         Atom('x')
-        >>> parse(db, 'f(a)')[0]
+        >>> parse(ops, 'f(a)')[0]
         Compound('f', Atom('a'))
-        >>> parse(db, '[]')[0]
+        >>> parse(ops, '[]')[0]
         Atom('[]')
-        >>> parse(db, 'X = a; X = b')[0]
+        >>> parse(ops, 'X = a; X = b')[0]
         Compound(';', Compound('=', Variable(), Atom('a')), Compound('=', Variable(), Atom('b')))
-        >>> parse(db, '[a]')[0]
+        >>> parse(ops, '[a]')[0]
         Compound('[|]', Atom('a'), Atom('[]'))
-        >>> parse(db, '[a|X]')[0]
+        >>> parse(ops, '[a|X]')[0]
         Compound('[|]', Atom('a'), Variable())
-        >>> parse(db, 'f(a, 5)')[0]
+        >>> parse(ops, 'f(a, 5)')[0]
         Compound('f', Atom('a'), Integer(5))
-        >>> parse(db, 'X = 4')[0]
+        >>> parse(ops, 'X = 4')[0]
         Compound('=', Variable(), Integer(4))
-        >>> parse(db, '(X = 4), f(X)')[0]
+        >>> parse(ops, '(X = 4), f(X)')[0]
         Compound(',', Compound('=', Variable(), Integer(4)), Compound('f', Variable()))
-        >>> parse(db, 'X = 4, g')[0]
+        >>> parse(ops, 'X = 4, g')[0]
         Compound(',', Compound('=', Variable(), Integer(4)), Atom('g'))
-        >>> parse(db, '[X,Y]')[0]
+        >>> parse(ops, '[X,Y]')[0]
         Compound('[|]', Variable(), Compound('[|]', Variable(), Atom('[]')))
-        >>> parse(db, 'X is Y+2')[0]
+        >>> parse(ops, 'X is Y+2')[0]
         Compound('is', Variable(), Compound('+', Variable(), Integer(2)))
-        >>> parse(db, '\+X')[0]
+        >>> parse(ops, '\+X')[0]
         Compound('\\\+', Variable())
-        >>> parse(db, 'W , \+ X')[0]
+        >>> parse(ops, 'W , \+ X')[0]
         Compound(',', Variable(), Compound('\\\+', Variable()))
-        >>> parse(db, '\+ X, W')[0]
+        >>> parse(ops, '\+ X, W')[0]
         Compound(',', Compound('\\\+', Variable()), Variable())
-        >>> parse(db, '\+ X + W')[0]
+        >>> parse(ops, '\+ X + W')[0]
         Compound('\\\+', Compound('+', Variable(), Variable()))
-        >>> parse(db, 'a, b, c')[0]
+        >>> parse(ops, 'a, b, c')[0]
         Compound(',', Atom('a'), Compound(',', Atom('b'), Atom('c')))
-        >>> parse(db, 'a, b, c')[0]
+        >>> parse(ops, 'a, b, c')[0]
         Compound(',', Atom('a'), Compound(',', Atom('b'), Atom('c')))
-        >>> parse(db, '4 - 3 + 1')[0]
+        >>> parse(ops, '4 - 3 + 1')[0]
         Compound('+', Compound('-', Integer(4), Integer(3)), Integer(1))
-        >>> parse(db, '\+X = Y')[0]
+        >>> parse(ops, '\+X = Y')[0]
         Compound('\\\+', Compound('=', Variable(), Variable()))
-        >>> parse(db, 'X = Y = Z')[0]
+        >>> parse(ops, 'X = Y = Z')[0]
         Traceback (most recent call last):
           File "<stdin>", line 1, in ?
         SyntaxError: operator precedence clash
@@ -289,7 +305,7 @@ def parse(database, *term_strs):
     scope = Scope()
     rvs = []
     for ts in term_strs:
-        p = Parser(database, ts, scope)
+        p = Parser(operators, ts, scope)
         try:
             term = p.parse()
         except SyntaxError:
@@ -299,7 +315,7 @@ def parse(database, *term_strs):
     rvs.append(scope)
     return tuple(rvs)
 
-def unparse(database, term, scope, printing=None):
+def unparse(operators, term, scope, printing=None):
     if printing is None:
         printing = set()
     term = term.resolve()
@@ -313,19 +329,19 @@ def unparse(database, term, scope, printing=None):
             n = n.subterms[1].resolve()
         tail = n
         if tail.is_atom(LIST_NIL):
-            return '[%s]' % ','.join(unparse_recurse(database, p, scope, printing, term) for p in parts)
+            return '[%s]' % ','.join(unparse_recurse(operators, p, scope, printing, term) for p in parts)
         else:
-            return '[%s|%s]' % (','.join(unparse_recurse(database, p, scope, printing, term) for p in parts), unparse_recurse(database, tail, scope, printing, term))
-    elif term.is_operator(database) and len(term.subterms) == 2:
-        prec, type = database.operators[term.name]
+            return '[%s|%s]' % (','.join(unparse_recurse(operators, p, scope, printing, term) for p in parts), unparse_recurse(operators, tail, scope, printing, term))
+    elif term.is_operator(operators) and len(term.subterms) == 2:
+        prec, type = operators[term.name]
         lhs, rhs = term.subterms
-        return '(%s %s %s)' % (unparse_recurse(database, lhs, scope, printing, term), term.name, unparse_recurse(database, rhs, scope, printing, term))
-    elif term.is_operator(database) and len(term.subterms) == 1:
-        prec, type = database.operators[term.name]
+        return '(%s %s %s)' % (unparse_recurse(operators, lhs, scope, printing, term), term.name, unparse_recurse(operators, rhs, scope, printing, term))
+    elif term.is_operator(operators) and len(term.subterms) == 1:
+        prec, type = operators[term.name]
         rhs = term.subterms[0]
-        return '(%s %s)' % (term.name, unparse_recurse(database, rhs, scope, printing, term))
+        return '(%s %s)' % (term.name, unparse_recurse(operators, rhs, scope, printing, term))
     elif isinstance(term, Compound):
-        return '%s(%s)' % (term.name, ', '.join('%s' % unparse_recurse(database, x, scope, printing, term) for x in term.subterms))
+        return '%s(%s)' % (term.name, ', '.join('%s' % unparse_recurse(operators, x, scope, printing, term) for x in term.subterms))
     elif isinstance(term, Variable):
         return scope.get_name(term)
     elif isinstance(term, Integer):
@@ -335,10 +351,10 @@ def unparse(database, term, scope, printing=None):
     else:
         return '???'
 
-def unparse_recurse(database, term, scope, printing, recursing_on):
+def unparse_recurse(operators, term, scope, printing, recursing_on):
     if recursing_on in printing or len(printing) > 10:
         return '...'
     printing.add(recursing_on)
-    rv = unparse(database, term, scope, printing)
+    rv = unparse(operators, term, scope, printing)
     printing.remove(recursing_on)
     return rv

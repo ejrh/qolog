@@ -17,7 +17,7 @@ class Term(object):
     def is_functor(self, name, arity):
         return False
 
-    def is_operator(self, database):
+    def is_operator(self, operators):
         return False
 
 class Atom(Term):
@@ -56,8 +56,8 @@ class Compound(Term):
     def is_functor(self, name, arity):
         return self.name == name and len(self.subterms) == arity
 
-    def is_operator(self, database):
-        return self.name in database.operators
+    def is_operator(self, operators):
+        return self.name in operators
 
     def __repr__(self):
         return 'Compound(%s, %s)' % (repr(self.name), ', '.join(repr(x) for x in self.subterms))
