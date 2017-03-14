@@ -42,10 +42,10 @@ class Compound(Term):
         self.subterms = subterms
 
     def get_vars(self):
-        vars = []
+        vs = []
         for s in self.subterms:
-            vars.extend(s.get_vars())
-        return vars
+            vs.extend(s.get_vars())
+        return vs
 
     def copy_to_new_scope(self, scope):
         return Compound(self.name, *[s.copy_to_new_scope(scope) for s in self.subterms])
@@ -123,7 +123,7 @@ class Scope(object):
             return var
         return self.names_to_vars[name]
 
-    def var_mappings(self, vars):
+    def var_mappings(self, vs):
         result = {}
         for name,var in self.names_to_vars.items():
             term = var.resolve()
@@ -165,10 +165,10 @@ def make_list(parts, tail=None):
         lst = Compound(LIST_CONS, p, lst)
     return lst
 
-def term_equality(t1, t2, type, test):
-    if not isinstance(t1, type):
+def term_equality(t1, t2, typ, test):
+    if not isinstance(t1, typ):
         return False
-    if not isinstance(t2, type):
+    if not isinstance(t2, typ):
         return False
     return test(t1, t2)
 

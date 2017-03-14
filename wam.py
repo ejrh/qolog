@@ -478,7 +478,7 @@ def print_instrs(instrs):
             return '%s/%d' % arg
         return str(arg)
 
-    for instr in query_instrs:
+    for instr in instrs:
         op = instr[0]
         args = instr[1:]
         if len(args) == 0:

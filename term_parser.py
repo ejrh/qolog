@@ -2,6 +2,8 @@ import string
 
 from term import *
 
+__all__ = ['parse', 'unparse']
+
 ATOM_CHARS = string.ascii_lowercase + '\''
 WORD_CHARS = string.letters + string.digits + '_'
 OPERATOR_CHARS = ',=:-<>\\+'
@@ -115,16 +117,16 @@ class Parser(object):
 
         def reduce():
             stack_oper = operator_stack.pop()
-            _, type = self.operators[stack_oper]
-            if type in ('xfx', 'xfy', 'yfx'):
+            _, typ = self.operators[stack_oper]
+            if typ in ('xfx', 'xfy', 'yfx'):
                 v2 = value_stack.pop()
                 v1 = value_stack.pop()
                 item = Compound(stack_oper, v1, v2)
-            elif type in ('fx', 'xf', 'fy', 'yf'):
+            elif typ in ('fx', 'xf', 'fy', 'yf'):
                 v1 = value_stack.pop()
                 item = Compound(stack_oper, v1)
             else:
-                raise Exception('Unhandled operator type ' + type)
+                raise Exception('Unhandled operator type %s' % typ)
             value_stack.append(item)
             #print>>sys.stderr, 'reduced using operator', stack_oper
 
@@ -137,7 +139,7 @@ class Parser(object):
                 continue
 
             operator = self.tokeniser.next()
-            prec, type = self.operators[operator]
+            prec, typ = self.operators[operator]
             while len(operator_stack) > 0:
                 stack_oper = operator_stack[-1]
                 stack_prec, stack_type = self.operators[stack_oper]
@@ -333,11 +335,11 @@ def unparse(operators, term, scope, printing=None):
         else:
             return '[%s|%s]' % (','.join(unparse_recurse(operators, p, scope, printing, term) for p in parts), unparse_recurse(operators, tail, scope, printing, term))
     elif term.is_operator(operators) and len(term.subterms) == 2:
-        prec, type = operators[term.name]
+        prec, typ = operators[term.name]
         lhs, rhs = term.subterms
         return '(%s %s %s)' % (unparse_recurse(operators, lhs, scope, printing, term), term.name, unparse_recurse(operators, rhs, scope, printing, term))
     elif term.is_operator(operators) and len(term.subterms) == 1:
-        prec, type = operators[term.name]
+        prec, typ = operators[term.name]
         rhs = term.subterms[0]
         return '(%s %s)' % (term.name, unparse_recurse(operators, rhs, scope, printing, term))
     elif isinstance(term, Compound):

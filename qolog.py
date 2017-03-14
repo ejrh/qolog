@@ -2,7 +2,7 @@ import sys
 import time
 
 from term import *
-from term_parser import *
+from term_parser import parse, unparse
 
 def bind(v, t):
     v.binding = t
@@ -339,8 +339,8 @@ class Database(object):
         self.register_at_end(('integer', 1), 'integer(_)', integer_rule)
         self.register_at_end(('between', 3), 'between(_, _, _)', between_rule)
 
-    def register_operator(self, name, precedence, type):
-        self.operators[name] = precedence, type
+    def register_operator(self, name, precedence, typ):
+        self.operators[name] = precedence, typ
 
     def register_block(self, functor, rule_pairs):
         if functor in self.rule_index:
@@ -420,8 +420,8 @@ ARITHMETIC_RULES = [
 #    'between(L, H, V) :- var(V), L < H, Lp1 is L + 1, between(Lp1, H, V)',
 ]
 
-def bound_vars_str(database, vars, scope):
-    return ', '.join('%s = %s' % (str(v), unparse(database.operators, t, scope)) for v,t in sorted(scope.var_mappings(vars).items()))
+def bound_vars_str(database, bound_vars, scope):
+    return ', '.join('%s = %s' % (str(v), unparse(database.operators, t, scope)) for v,t in sorted(scope.var_mappings(bound_vars).items()))
 
 def prove(goal, database):
     """
