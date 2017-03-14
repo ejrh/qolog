@@ -88,6 +88,41 @@ def comma_rule(term, database):
         for more_bound_vars in prove(t2, database):
             yield bound_vars.union(more_bound_vars)
 
+def optimised_comma_rule(term, database):
+    """
+        An optimised comma rule that builds a list of subgoals from nested
+        comma operators, and processes the list using a stack of generators,
+        instead of recursively.
+    """
+
+    if not term.is_functor(',', 2):
+        return
+
+    if not hasattr(term, 'subgoals'):
+        term.subgoals = []
+        def find_subgoals(target):
+            if target.is_functor(',', 2):
+                for st in target.subterms:
+                    find_subgoals(st)
+            else:
+                term.subgoals.append(target)
+        find_subgoals(term)
+
+    generator_stack = [None] * len(term.subgoals)
+    bound_vars_stack = [None] * len(term.subgoals)
+    i = 0
+    while i >= 0:
+        if generator_stack[i] is None:
+            generator_stack[i] = prove(term.subgoals[i], database)
+        try:
+            bound_vars_stack[i] = generator_stack[i].next()
+            i += 1
+        except StopIteration:
+            generator_stack[i] = None
+            i -= 1
+        if i >= len(term.subgoals):
+            yield set.union(*bound_vars_stack)
+            i -= 1
 
 def semicolon_rule(term, database):
     if not term.is_functor(';', 2):
@@ -282,7 +317,8 @@ class Database(object):
         self.register_operator('\\+', 900, 'fy')
 
         self.register_at_end(('=', 2), '_ = _', equals_rule)
-        self.register_at_end((',', 2), '_ , _', comma_rule)
+        #self.register_at_end((',', 2), '_ , _', comma_rule)
+        self.register_at_end((',', 2), '_ , _', optimised_comma_rule)
         self.register_at_end((';', 2), '_ ; _', semicolon_rule)
         self.register_at_end(('true', 0), 'true', true_rule)
         self.register_at_end(('fail', 0), 'fail', fail_rule)
