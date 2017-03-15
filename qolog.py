@@ -71,8 +71,6 @@ def unify_strs(database, str1, str2):
     return sorted(scope.var_mappings(unifications).keys())
 
 def equals_rule(term, database):
-    if not term.is_functor('=', 2):
-        return
     t1, t2 = term.subterms
     bound_vars = unify(t1, t2)
     if bound_vars is None:
@@ -81,8 +79,6 @@ def equals_rule(term, database):
     unbind_all(bound_vars)
 
 def comma_rule(term, database):
-    if not term.is_functor(',', 2):
-        return
     t1, t2 = term.subterms
     for bound_vars in prove(t1, database):
         for more_bound_vars in prove(t2, database):
@@ -94,9 +90,6 @@ def optimised_comma_rule(term, database):
         comma operators, and processes the list using a stack of generators,
         instead of recursively.
     """
-
-    if not term.is_functor(',', 2):
-        return
 
     if not hasattr(term, 'subgoals'):
         term.subgoals = []
@@ -125,8 +118,6 @@ def optimised_comma_rule(term, database):
             i -= 1
 
 def semicolon_rule(term, database):
-    if not term.is_functor(';', 2):
-        return
     t1, t2 = term.subterms
     for bound_vars in prove(t1, database):
         yield bound_vars
@@ -134,41 +125,23 @@ def semicolon_rule(term, database):
         yield bound_vars
 
 def true_rule(term, database):
-    if not term.is_atom('true'):
-        return []
     return [set()]
 
 def fail_rule(term, database):
-    if not term.is_atom('fail'):
-        return []
     return []
 
 def not_rule(term, database):
-    if not term.is_functor('\\+', 1):
-        return []
-    goal = term.subterms[0]
-    passed = False
-    bound_vars = None
-    for bound_vars in prove(goal, database):
-        passed = True
-        break
-    if bound_vars is not None:
+    for bound_vars in prove(term.subterms[0], database):
         unbind_all(bound_vars)
-    if passed:
         return []
-    else:
-        return [set()]
+    return [set()]
 
 def assert_rule(term, database):
-    if not term.is_functor('assert', 1):
-        return []
     rule = term.subterms[0]
     database.add_rule_at_end(rule)
     return [set()]
 
 def retractall_rule(term, database):
-    if not term.is_functor('retractall', 1):
-        return []
     head = term.subterms[0]
     database.remove_matching_rules(head)
     return [set()]
@@ -196,8 +169,6 @@ def evaluate_term(term):
         raise Exception('Unhandled expression')
 
 def is_rule(term, database):
-    if not term.is_functor('is', 2):
-        return
     t1, t2 = term.subterms
     result = Integer(evaluate_term(t2))
     bound_vars = unify(t1, result)
@@ -217,21 +188,15 @@ def arithmetic_comparison_rule(test):
     return f
 
 def display_rule(term, database):
-    if not term.is_functor('display', 1):
-        return []
     arg = term.subterms[0].resolve()
     print unparse(database.operators, arg, Scope()),
     return [set()]
 
 def nl_rule(term, database):
-    if not term.is_atom('nl'):
-        return []
     print
     return [set()]
 
 def findall_rule(term, database):
-    if not term.is_functor('findall', 3):
-        return
     temp, goal, bag_var = term.subterms
     results = []
     for bound_vars in prove(goal, database):
@@ -244,25 +209,25 @@ def findall_rule(term, database):
     yield bound_vars
     unbind_all(bound_vars)
 
+def once_rule(term, database):
+    for bound_vars in prove(term.subterms[0], database):
+        yield bound_vars
+        unbind_all(bound_vars)
+        return
+
 def var_rule(term, database):
-    if not term.is_functor('var', 1):
-        return []
     term = term.subterms[0].resolve()
     if isinstance(term, Variable):
         return [set()]
     return []
 
 def integer_rule(term, database):
-    if not term.is_functor('integer', 1):
-        return []
     term = term.subterms[0].resolve()
     if isinstance(term, Integer):
         return [set()]
     return []
 
 def between_rule(term, database):
-    #if not term.is_functor('between', 3):
-    #    return
     low, high, value = term.subterms
     low = low.resolve()
     high = high.resolve()
@@ -335,6 +300,7 @@ class Database(object):
         self.register_at_end(('display', 1), 'display(_)', display_rule)
         self.register_at_end(('nl', 0), 'nl', nl_rule)
         self.register_at_end(('findall', 3), 'findall(_, _, _)', findall_rule)
+        self.register_at_end(('once', 1), 'once(_)', once_rule)
         self.register_at_end(('var', 1), 'var(_)', var_rule)
         self.register_at_end(('integer', 1), 'integer(_)', integer_rule)
         self.register_at_end(('between', 3), 'between(_, _, _)', between_rule)
@@ -474,6 +440,14 @@ def prove(goal, database):
         L = [_G1,_G2]
         >>> prove_str('findall(X, member(X, [a,b,c]), S)', db)
         S = [a,b,c]
+        >>> prove_str('once(member(X, [1,2,3]))', db)
+        X = 1
+        >>> prove_str('once(member(4, [1,2,3]))', db)
+        >>> prove_str('once(X = 1); var(X)', db)
+        X = 1
+        <BLANKLINE>
+        >>> prove_str('G = (X = 1), once(G)', db)
+        G = (1 = 1), X = 1
         >>> prove_str('X = 5, fail; X = 7', db)
         X = 7
         >>> prove_str('var(X), Y = 5', db)
@@ -482,6 +456,8 @@ def prove(goal, database):
         >>> prove_str('integer(3), Y = 1; integer(X), Y = 2; integer(w), Y = 3', db)
         Y = 1
         >>> prove_str('\+(X = 5)', db)
+        >>> prove_str('\+(X = 5); X = 7', db)
+        X = 7
         >>> prove_str('X = 3, \+(X = 5)', db)
         X = 3
         >>> prove_str('concat([a,b,c], [d,e], Z)', db)
@@ -506,6 +482,8 @@ def prove(goal, database):
                 findall(P, (between(2, 25, P), prime(P)), S)''', db)
         S = [2,3,5,7,11,13,17,19,23]
     """
+
+    goal = goal.resolve()
     functor = goal.get_functor()
 
     for _, r in database.get_rules(functor):
