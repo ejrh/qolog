@@ -84,6 +84,17 @@ def comma_rule(term, database):
         for more_bound_vars in prove(t2, database):
             yield bound_vars.union(more_bound_vars)
 
+def find_subgoals(term):
+    subgoals = []
+    def f(target):
+        if target.is_functor(',', 2):
+            for st in target.subterms:
+                f(st)
+        else:
+            subgoals.append(target)
+    f(term)
+    return subgoals
+
 def optimised_comma_rule(term, database):
     """
         An optimised comma rule that builds a list of subgoals from nested
@@ -92,26 +103,24 @@ def optimised_comma_rule(term, database):
     """
 
     if not hasattr(term, 'subgoals'):
-        term.subgoals = []
-        def find_subgoals(target):
-            if target.is_functor(',', 2):
-                for st in target.subterms:
-                    find_subgoals(st)
-            else:
-                term.subgoals.append(target)
-        find_subgoals(term)
+        term.subgoals = find_subgoals(term)
 
-    generator_stack = [None] * len(term.subgoals)
-    bound_vars_stack = [None] * len(term.subgoals)
+    generator_stack = []
+    bound_vars_stack = []
     i = 0
     while i >= 0:
-        if generator_stack[i] is None:
-            generator_stack[i] = prove(term.subgoals[i], database)
+        if i == len(generator_stack):
+            #print 'Create generator', i
+            gen = prove(term.subgoals[i], database)
+            generator_stack.append(gen)
+            bound_vars_stack.append(None)
         try:
             bound_vars_stack[i] = generator_stack[i].next()
             i += 1
         except StopIteration:
-            generator_stack[i] = None
+            #print 'Discard generator', i
+            generator_stack.pop()
+            bound_vars_stack.pop()
             i -= 1
         if i >= len(term.subgoals):
             yield set.union(*bound_vars_stack)
@@ -283,7 +292,7 @@ class Database(object):
 
         self.register_at_end(('=', 2), '_ = _', equals_rule)
         #self.register_at_end((',', 2), '_ , _', comma_rule)
-        self.register_at_end((',', 2), '_ , _', optimised_comma_rule)
+        #self.register_at_end((',', 2), '_ , _', optimised_comma_rule)
         self.register_at_end((';', 2), '_ ; _', semicolon_rule)
         self.register_at_end(('true', 0), 'true', true_rule)
         self.register_at_end(('fail', 0), 'fail', fail_rule)
@@ -325,11 +334,15 @@ class Database(object):
             rule = rule.copy_to_new_scope(Scope())
         if not rule.is_functor(':-', 2):
             rule = Compound(':-', rule, Atom('true'))
+            subgoals = []
+        else:
+            subgoals = find_subgoals(rule.subterms[1])
         head = rule.subterms[0]
         functor = head.get_functor()
         if functor is None:
             raise Exception('Cannot make a rule with head %s' % (head,))
         compiled_rule = compile_rule(rule)
+        compiled_rule.subgoals = subgoals
         return functor, head, compiled_rule
 
     def add_rules(self, rules):
@@ -388,6 +401,9 @@ ARITHMETIC_RULES = [
 
 def bound_vars_str(database, bound_vars, scope):
     return ', '.join('%s = %s' % (str(v), unparse(database.operators, t, scope)) for v,t in sorted(scope.var_mappings(bound_vars).items()))
+
+BUILTIN = object()
+DEFINITION = object()
 
 def prove(goal, database):
     """
@@ -481,14 +497,166 @@ def prove(goal, database):
                 assert(known_prime(2)), \
                 findall(P, (between(2, 25, P), prime(P)), S)''', db)
         S = [2,3,5,7,11,13,17,19,23]
+
+        ALGORITHM EXAMPLE
+
+        We maintain two stacks, the "goal stack" and the "run stack".  They can be depicted as follows:
+
+        Run stack (grows ->)                              Goal stack (grows <-)
+
+        Goals to be proved are pushed to the goal stack.  For example, "a, b, c" (assume "b :- d" and "b :- e, f"):
+
+        []                                                a   b   c
+
+        We pop a goal off the goal stack, and look it up in the database.
+          - If it's builtin, we create a builtin generator for it and push that to the run stack.
+          - If it's a defined predicate, we create a definition generator for it and push that to the run stack.
+
+        B(a)                                              b   c
+
+        We fetch from the generator at the top of the run stack.
+          - If it's a builtin generator, we pop the next goal and turn that into a generator as above.
+          - If it's a definition generator, it will yield the next clause (rule or fact) for that predicate,
+            with its head pre-unified with the goal.  We push all subgoals for that clause (0 for a fact) to the goal
+            stack, keeping a note of the number of subgoals for the clause.
+
+        For our example, when B(a) yielded a solution, we created a definition generator D(b).
+
+        B(a)   D(b)                                       c
+
+        D(b) then yielded the first clause "b :- d".
+
+        B(a)   D(b)                                       d, c
+               1 subgoal
+
+        We pop the next goal "d" and turn that into a generator, fetch from it, and then pop the next goal "c".
+
+        B(a)   D(b)         G(d)                          c
+               1 subgoal
+
+        B(a)   D(b)         G(d)   G(c)                   []
+               1 subgoal
+
+        Fetching from G(c) yields a solution.  As the goal stack is empty, we combine all the solutions from
+        generators in the stack, and yield it.
+
+        Then we fetch again from the generator at the top of the run stack, G(c).  G(c) does not have any more solutions,
+        so we pop it off the run stack and put it back on the goal stack.
+
+        B(a)   D(b)         G(d)                          c
+               1 subgoal
+
+        We fetch from G(d), it does not have any more solutions, so we do the same.
+
+        B(a)   D(b)                                       d   c
+               1 subgoal
+
+        We fetch from the definition generator, D(b), and it yields the next clause "b :- e, f".  We pop the subgoals from
+        the previous clause, and push the subgoals from this one.
+
+        B(a)   D(b)                                       e    f   c
+               2 subgoals
+
+        We continue with the next goal on the goal stack, etc., yielding additional solutions.  Eventually D(b) has no
+        more clauses to yield, so we pop the subgoals off, finally pop D(b), and return b to the goal stack.
+
+        B(a)                                              b   c
+
+        We fetch again from B(a).  If it yields again, we repeat the process with the next goal "b".  Otherwise,
+        we pop it and push it back to the goal stack.
+
+        []                                                a   b   c
+
+        The run stack is now empty, and the algorithm terminates.
+
     """
 
-    goal = goal.resolve()
-    functor = goal.get_functor()
+    goal_stack = []
+    run_stack = []
+    subgoal_count_stack = []
+    bound_vars_stack = []
 
-    for _, r in database.get_rules(functor):
-        for bound_vars in r(goal, database):
-            yield bound_vars
+    goal = goal.resolve()
+
+    subgoals = find_subgoals(goal)
+    for sg in reversed(subgoals):
+        goal_stack.append(sg)
+
+    def generate_clauses(goal, clauses):
+        for head, subgoals in clauses:
+
+            local_scope = Scope()
+            local_head = head.copy_to_new_scope(local_scope)
+            local_subgoals = [x.copy_to_new_scope(local_scope) for x in subgoals]
+
+            bound_vars = unify(local_head, goal)
+            if bound_vars is None:
+                continue
+            yield bound_vars, local_subgoals
+            unbind_all(bound_vars)
+
+    #print 'Proving goals: ', [unparse(database.operators, x, Scope()) for x in goal_stack]
+    while True:
+
+        if len(goal_stack) == 0:
+            all_bound_vars = set.union(*bound_vars_stack)
+            yield all_bound_vars
+        else:
+            next_goal = goal_stack.pop()
+            functor = next_goal.get_functor()
+            rules = database.get_rules(functor)
+            if len(rules) == 0:
+                raise Exception('No rules for functor %s', functor)
+
+            if (len(rules) == 1 and not hasattr(rules[0][1], 'subgoals')):
+                builtin = rules[0][1]
+                gen = iter(builtin(next_goal, database))
+                run_stack.append((BUILTIN, next_goal, gen))
+                #print 'Pushed builtin gen', len(run_stack)
+            else:
+                clauses = [(x[0], x[1].subgoals) for x in rules]
+                gen = generate_clauses(next_goal, clauses)
+                run_stack.append((DEFINITION, next_goal, gen))
+                subgoal_count_stack.append(0)
+                #print 'Pushed definition gen', len(run_stack)
+            bound_vars_stack.append(set())
+
+        while len(run_stack) > 0:
+            try:
+                bound_vars_stack.pop()
+                typ, gen_goal, gen = run_stack[-1]
+                result = gen.next()
+                if typ is DEFINITION:
+                    subgoals_to_pop = subgoal_count_stack.pop()
+                    #print 'Popped %d subgoals' % subgoals_to_pop
+                    for i in range(subgoals_to_pop):
+                        goal_stack.pop()
+                    new_bound_vars, subgoals = result
+                    for sg in reversed(subgoals):
+                        goal_stack.append(sg)
+                    subgoal_count_stack.append(len(subgoals))
+                    #print 'Pushed %d subgoals' % len(subgoals)
+                elif typ is BUILTIN:
+                    new_bound_vars = result
+                else:
+                    raise Exception
+                bound_vars_stack.append(new_bound_vars)
+                #print 'Fetched from gen', len(run_stack)
+                break
+            except StopIteration:
+                typ, gen_goal, gen = run_stack.pop()
+                #print 'Popped gen', len(run_stack)
+                if typ is DEFINITION:
+                    subgoals_to_pop = subgoal_count_stack.pop()
+                    #print 'Popped %d subgoals' % subgoals_to_pop
+                    for i in range(subgoals_to_pop):
+                        goal_stack.pop()
+                goal_stack.append(gen_goal)
+
+        if len(run_stack) == 0:
+            break
+
+    #print 'Finished proving'
 
 def prove_str(goal_str, database):
     goal, scope = parse(database.operators, goal_str)
