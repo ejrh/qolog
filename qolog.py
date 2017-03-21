@@ -224,6 +224,18 @@ def once_rule(term, database):
         unbind_all(bound_vars)
         return
 
+def atmost_rule(term, database):
+    num = term.subterms[0].resolve()
+    if not isinstance(num, Integer):
+        return
+    i = 0
+    for bound_vars in prove(term.subterms[1], database):
+        yield bound_vars
+        i += 1
+        if i >= num.value:
+            unbind_all(bound_vars)
+            return
+
 def var_rule(term, database):
     term = term.subterms[0].resolve()
     if isinstance(term, Variable):
@@ -310,6 +322,7 @@ class Database(object):
         self.register_at_end(('nl', 0), 'nl', nl_rule)
         self.register_at_end(('findall', 3), 'findall(_, _, _)', findall_rule)
         self.register_at_end(('once', 1), 'once(_)', once_rule)
+        self.register_at_end(('atmost', 2), 'atmost(_, _)', atmost_rule)
         self.register_at_end(('var', 1), 'var(_)', var_rule)
         self.register_at_end(('integer', 1), 'integer(_)', integer_rule)
         self.register_at_end(('between', 3), 'between(_, _, _)', between_rule)
@@ -464,6 +477,9 @@ def prove(goal, database):
         <BLANKLINE>
         >>> prove_str('G = (X = 1), once(G)', db)
         G = (1 = 1), X = 1
+        >>> prove_str('atmost(2, (X = 1; Y = 2; Z = 3)', db)
+        X = 1
+        Y = 2
         >>> prove_str('X = 5, fail; X = 7', db)
         X = 7
         >>> prove_str('var(X), Y = 5', db)
