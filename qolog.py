@@ -218,6 +218,9 @@ def findall_rule(term, database):
     yield bound_vars
     unbind_all(bound_vars)
 
+def call_rule(term, database):
+    return prove(term.subterms[0], database)
+
 def once_rule(term, database):
     for bound_vars in prove(term.subterms[0], database):
         yield bound_vars
@@ -321,6 +324,7 @@ class Database(object):
         self.register_at_end(('display', 1), 'display(_)', display_rule)
         self.register_at_end(('nl', 0), 'nl', nl_rule)
         self.register_at_end(('findall', 3), 'findall(_, _, _)', findall_rule)
+        self.register_at_end(('call', 1), 'call(_)', call_rule)
         self.register_at_end(('once', 1), 'once(_)', once_rule)
         self.register_at_end(('atmost', 2), 'atmost(_, _)', atmost_rule)
         self.register_at_end(('var', 1), 'var(_)', var_rule)
@@ -491,6 +495,14 @@ def prove(goal, database):
         X could be any of...  1 2 3
         >>> prove_str('findall(X, member(X, [a,b,c]), S)', db)
         S = [a,b,c]
+        >>> prove_str('X = (Y = 1), X', db)
+        X = (1 = 1), Y = 1
+        >>> prove_str('X', db)
+        Traceback (most recent call last):
+        Exception: No rules for unbound variable
+        >>> prove_str('X = member(Z, [a,b]), call(X)', db)
+        X = member(a, [a,b]), Z = a
+        X = member(b, [a,b]), Z = b
         >>> prove_str('once(member(X, [1,2,3]))', db)
         X = 1
         >>> prove_str('once(member(4, [1,2,3]))', db)
@@ -637,6 +649,9 @@ def prove(goal, database):
             yield all_bound_vars
         else:
             next_goal = goal_stack.pop()
+            next_goal = next_goal.resolve()
+            if isinstance(next_goal, Variable):
+                raise Exception('No rules for unbound variable')
             functor = next_goal.get_functor()
             rules = database.get_rules(functor)
             if len(rules) == 0:
