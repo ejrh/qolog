@@ -393,11 +393,50 @@ class Database(object):
             raise Exception('No rules for %s' % (functor,))
         return self.rule_index[functor]
 
+class ListRules(object):
+    """
+        >>> db = Database()
+        >>> db.add_rules(LIST_RULES)
+
+        >>> prove_str('length([], 0)', db)
+        <BLANKLINE>
+        >>> prove_str('length([a], 1)', db)
+        <BLANKLINE>
+        >>> prove_str('length([a], 2)', db)
+        >>> prove_str('length([a], X)', db)
+        X = 1
+        >>> prove_str('length([a,b,c], X)', db)
+        X = 3
+        >>> prove_str('length(L, 2)', db)
+        L = [_G1,_G2]
+        >>> prove_str('atmost(3, length(L, N))', db)
+        L = [], N = 0
+        L = [_G1], N = 1
+        L = [_G1,_G2], N = 2
+
+        >>> prove_str('member(X, [a,b,c]), Y = [X|Z], Y = [_,2]', db)
+        X = a, Y = [a,2], Z = [2]
+        X = b, Y = [b,2], Z = [2]
+        X = c, Y = [c,2], Z = [2]
+
+        >>> prove_str('reverse([a,b,c,d], X)', db)
+        X = [d,c,b,a]
+
+        >>> prove_str('concat([a,b,c], [d,e], Z)', db)
+        Z = [a,b,c,d,e]
+        >>> prove_str('concat(X, [y,z], [w,x,y,z])', db)
+        X = [w,x]
+    """
+
 LIST_RULES = [
     'length([], 0)',
-    'length([_|T], X) :- var(X), length(T, X0), X is X0 + 1',
-    'length([_|T], X) :- integer(X), X >= 0, Xm1 is X - 1, length(T, Xm1)',
-    'member(M, L) :- L = [M|L2]',
+    'length([_|T], N) :- var(N), length_ct(T, 1, N)',
+    'length([_|T], N) :- integer(N), Nm1 is N - 1, length_gen(T, Nm1)',
+    'length_ct([], N, N)',
+    'length_ct([_|T], N0, N) :- N1 is N0 + 1, length_ct(T, N1, N)',
+    'length_gen([], 0)',
+    'length_gen([_|T], N) :- N >= 0, Nm1 is N - 1, length_gen(T, Nm1)',
+    'member(M, [M|_])',
     'member(M, L) :- L = [_|L2], member(M, L2)',
     'reverse(X, Y) :- reverse(X, [], Y, Y)',
     'reverse([], A, A, [])',
@@ -442,31 +481,14 @@ def prove(goal, database):
         >>> prove_str('X = Y', db)
         X = Y
         >>> prove_str('6 is 5', db)
-        >>> prove_str('length([], 0)', db)
-        <BLANKLINE>
-        >>> prove_str('length([a], 1)', db)
-        <BLANKLINE>
-        >>> prove_str('length([a], 2)', db)
-        >>> prove_str('length([a], X)', db)
-        X = 1
         >>> prove_str('L1 = [c,d], L2 = [a,b], L2 = [a,L3]', db)
         L1 = [c,d], L2 = [a,b], L3 = b
-        >>> prove_str('member(X, [a,b,c]), Y = [X|Z], Y = [W,2]', db)
-        W = a, X = a, Y = [a,2], Z = [2]
-        W = b, X = b, Y = [b,2], Z = [2]
-        W = c, X = c, Y = [c,2], Z = [2]
         >>> prove_str('X = [a,b|Z], X = [A,B,c,d,e]', db)
         A = a, B = b, X = [a,b,c,d,e], Z = [c,d,e]
-        >>> prove_str('reverse([a,b,c,d], X)', db)
-        X = [d,c,b,a]
         >>> prove_str('X is 2 + 2', db)
         X = 4
         >>> prove_str("(display('X could be any of... '), member(X, [1,2,3]), display(X), fail); nl, fail", db)
         X could be any of...  1 2 3
-        >>> prove_str('length([a,b,c], X)', db)
-        X = 3
-        >>> prove_str('length(L, 2)', db)
-        L = [_G1,_G2]
         >>> prove_str('findall(X, member(X, [a,b,c]), S)', db)
         S = [a,b,c]
         >>> prove_str('once(member(X, [1,2,3]))', db)
@@ -492,10 +514,6 @@ def prove(goal, database):
         X = 7
         >>> prove_str('X = 3, \+(X = 5)', db)
         X = 3
-        >>> prove_str('concat([a,b,c], [d,e], Z)', db)
-        Z = [a,b,c,d,e]
-        >>> prove_str('concat(X, [y,z], [w,x,y,z])', db)
-        X = [w,x]
         >>> db.add_rules(['triplicate(X, W) :- W = [X,X,X]'])
         >>> prove_str('X = 1, findall(S, triplicate(X, S), B)', db)
         B = [[1,1,1]], X = 1
