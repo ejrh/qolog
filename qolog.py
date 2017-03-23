@@ -128,9 +128,9 @@ def optimised_comma_rule(term, database):
 
 def semicolon_rule(term, database):
     t1, t2 = term.subterms
-    for bound_vars in prove(t1, database):
+    for bound_vars in prove(t1, database, transmit_cut=True):
         yield bound_vars
-    for bound_vars in prove(t2, database):
+    for bound_vars in prove(t2, database, transmit_cut=True):
         yield bound_vars
 
 def true_rule(term, database):
@@ -239,6 +239,24 @@ def atmost_rule(term, database):
             unbind_all(bound_vars)
             return
 
+class CutBacktrack(Exception):
+    pass
+
+def cut_rule(term, database):
+    """
+        >>> db = Database()
+        >>> prove_str('(X = 1; X = 2), !, Y is X + 1', db)
+        X = 1, Y = 2
+        >>> db.add_rules(['data(one)', 'data(two)', 'data(three)'])
+        >>> db.add_rules(['cut_test_b(X) :- data(X), !', 'cut_test_b(last)'])
+        >>> prove_str('cut_test_b(X)', db)
+        X = one
+        >>> prove_str('(X = 1, !; X = 2)', db)
+        X = 1
+    """
+    yield set()
+    raise CutBacktrack
+
 def var_rule(term, database):
     term = term.subterms[0].resolve()
     if isinstance(term, Variable):
@@ -327,6 +345,7 @@ class Database(object):
         self.register_at_end(('call', 1), 'call(_)', call_rule)
         self.register_at_end(('once', 1), 'once(_)', once_rule)
         self.register_at_end(('atmost', 2), 'atmost(_, _)', atmost_rule)
+        self.register_at_end(('!', 0), '!', cut_rule)
         self.register_at_end(('var', 1), 'var(_)', var_rule)
         self.register_at_end(('integer', 1), 'integer(_)', integer_rule)
         self.register_at_end(('between', 3), 'between(_, _, _)', between_rule)
@@ -461,7 +480,7 @@ def bound_vars_str(database, bound_vars, scope):
 BUILTIN = object()
 DEFINITION = object()
 
-def prove(goal, database):
+def prove(goal, database, transmit_cut=False):
     """
         Attempt to prove a goal by unifying it with all possible rules.
 
@@ -641,6 +660,11 @@ def prove(goal, database):
             yield bound_vars, local_subgoals
             unbind_all(bound_vars)
 
+    def pop_subgoals():
+        subgoals_to_pop = subgoal_count_stack.pop()
+        for i in range(subgoals_to_pop):
+            goal_stack.pop()
+
     #print 'Proving goals: ', [unparse(database.operators, x, Scope()) for x in goal_stack]
     while True:
 
@@ -676,10 +700,7 @@ def prove(goal, database):
                 typ, gen_goal, gen = run_stack[-1]
                 result = gen.next()
                 if typ is DEFINITION:
-                    subgoals_to_pop = subgoal_count_stack.pop()
-                    #print 'Popped %d subgoals' % subgoals_to_pop
-                    for i in range(subgoals_to_pop):
-                        goal_stack.pop()
+                    pop_subgoals()
                     new_bound_vars, subgoals = result
                     for sg in reversed(subgoals):
                         goal_stack.append(sg)
@@ -696,11 +717,29 @@ def prove(goal, database):
                 typ, gen_goal, gen = run_stack.pop()
                 #print 'Popped gen', len(run_stack)
                 if typ is DEFINITION:
-                    subgoals_to_pop = subgoal_count_stack.pop()
-                    #print 'Popped %d subgoals' % subgoals_to_pop
-                    for i in range(subgoals_to_pop):
-                        goal_stack.pop()
+                    pop_subgoals()
                 goal_stack.append(gen_goal)
+            except CutBacktrack:
+                # At this point, the cut is the top of the run stack.  We pop it and push it back to the goal stack.
+                # We must then pop (and unbind from) generators until the cut has disappeared from the goal stack.
+                typ, gen_goal, gen = run_stack.pop()
+                goal_stack.append(gen_goal)
+                goal_stack_len = len(goal_stack)
+                while len(run_stack) > 0:
+                    typ, gen_goal, gen = run_stack.pop()
+                    bound_vars = bound_vars_stack.pop()
+                    unbind_all(bound_vars)
+                    if typ is DEFINITION:
+                        pop_subgoals()
+                    goal_stack.append(gen_goal)
+
+                    if typ is DEFINITION and len(goal_stack) < goal_stack_len:
+                        break
+
+                # If we were called with transmit_cut (e.g. by semicolon_rule), and we've not yet encountered the
+                # enclosing predicate of the cut, then we rethrow it to be handled by the caller.
+                if transmit_cut and len(run_stack) == 0:
+                    raise
 
         if len(run_stack) == 0:
             break

@@ -6,8 +6,7 @@ __all__ = ['parse', 'unparse']
 
 ATOM_CHARS = string.ascii_lowercase + '\''
 WORD_CHARS = string.letters + string.digits + '_'
-OPERATOR_CHARS = ',=:-<>\\+'
-SIMPLE_CHARS = WORD_CHARS + '(['
+OPERATOR_CHARS = '=:-<>\\+!'
 
 class Tokeniser(object):
     def __init__(self, term_str):
@@ -92,6 +91,8 @@ def tokenise_str(input_str):
         ["'hello there'"]
         >>> tokenise_str('\+foo(X)')
         ['\\\+', 'foo', '(', 'X', ')']
+        >>> tokenise_str('a, !, b')
+        ['a', ',', '!', ',', 'b']
     """
     t = Tokeniser(input_str)
     tokens = []
@@ -172,7 +173,7 @@ class Parser(object):
 
     def parse_simple(self):
         tok = self.tokeniser.next()
-        if tok[0] in ATOM_CHARS:
+        if tok[0] in ATOM_CHARS or tok[0] in OPERATOR_CHARS:
             term = self.parse_atom_or_compound(tok)
         elif tok[0] in string.ascii_uppercase or tok[0] == '_':
             term = self.parse_variable(tok)
@@ -299,6 +300,8 @@ def parse(operators, *term_strs):
         Compound('+', Compound('-', Integer(4), Integer(3)), Integer(1))
         >>> parse(ops, '\+X = Y')[0]
         Compound('\\\+', Compound('=', Variable(), Variable()))
+        >>> parse(ops, 'a, !, b')[0]
+        Compound(',', Atom('a'), Compound(',', Atom('!'), Atom('b')))
         >>> parse(ops, 'X = Y = Z')[0]
         Traceback (most recent call last):
           File "<stdin>", line 1, in ?
