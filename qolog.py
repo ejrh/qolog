@@ -75,7 +75,7 @@ def equals_rule(term, database):
     bound_vars = unify(t1, t2)
     if bound_vars is None:
         return
-    yield bound_vars
+    yield True, bound_vars
     unbind_all(bound_vars)
 
 def comma_rule(term, database):
@@ -134,7 +134,7 @@ def semicolon_rule(term, database):
         yield bound_vars
 
 def true_rule(term, database):
-    return [set()]
+    return [(True, set())]
 
 def fail_rule(term, database):
     return []
@@ -143,17 +143,17 @@ def not_rule(term, database):
     for bound_vars in prove(term.subterms[0], database):
         unbind_all(bound_vars)
         return []
-    return [set()]
+    return [(True, set())]
 
 def assert_rule(term, database):
     rule = term.subterms[0]
     database.add_rule_at_end(rule)
-    return [set()]
+    return [(True, set())]
 
 def retractall_rule(term, database):
     head = term.subterms[0]
     database.remove_matching_rules(head)
-    return [set()]
+    return [(True, set())]
 
 def evaluate_term(term):
     term = term.resolve()
@@ -183,7 +183,7 @@ def is_rule(term, database):
     bound_vars = unify(t1, result)
     if bound_vars is None:
         return
-    yield bound_vars
+    yield True, bound_vars
     unbind_all(bound_vars)
 
 def arithmetic_comparison_rule(test):
@@ -192,18 +192,18 @@ def arithmetic_comparison_rule(test):
         result1 = evaluate_term(t1)
         result2 = evaluate_term(t2)
         if test(result1, result2):
-            return [set()]
+            return [(True, set())]
         return []
     return f
 
 def display_rule(term, database):
     arg = term.subterms[0].resolve()
     print unparse(database.operators, arg, Scope()),
-    return [set()]
+    return [(True, set())]
 
 def nl_rule(term, database):
     print
-    return [set()]
+    return [(True, set())]
 
 def findall_rule(term, database):
     temp, goal, bag_var = term.subterms
@@ -215,7 +215,7 @@ def findall_rule(term, database):
     bound_vars = unify(bag_var, bag)
     if bound_vars is None:
         return
-    yield bound_vars
+    yield True, bound_vars
     unbind_all(bound_vars)
 
 def call_rule(term, database):
@@ -223,7 +223,7 @@ def call_rule(term, database):
 
 def once_rule(term, database):
     for bound_vars in prove(term.subterms[0], database):
-        yield bound_vars
+        yield True, bound_vars
         unbind_all(bound_vars)
         return
 
@@ -260,13 +260,13 @@ def cut_rule(term, database):
 def var_rule(term, database):
     term = term.subterms[0].resolve()
     if isinstance(term, Variable):
-        return [set()]
+        return [(True, set())]
     return []
 
 def integer_rule(term, database):
     term = term.subterms[0].resolve()
     if isinstance(term, Integer):
-        return [set()]
+        return [(True, set())]
     return []
 
 def between_rule(term, database):
@@ -477,8 +477,60 @@ ARITHMETIC_RULES = [
 def bound_vars_str(database, bound_vars, scope):
     return ', '.join('%s = %s' % (str(v), unparse(database.operators, t, scope)) for v,t in sorted(scope.var_mappings(bound_vars).items()))
 
-BUILTIN = object()
-DEFINITION = object()
+class RunItem(object):
+    def __init__(self, database, goal):
+        self.database = database
+        self.goal = goal
+        self.bound_vars = set()
+        self.end_of_gen = False
+
+class BuiltinRunItem(RunItem):
+    def __init__(self, database, goal, builtin):
+        super(BuiltinRunItem, self).__init__(database, goal)
+        self.generator = iter(builtin(goal, database))
+
+    def do_next(self, goal_stack):
+        result = self.generator.next()
+        if type(result) is tuple:
+            self.end_of_gen, self.bound_vars = result
+
+    def __str__(self):
+        return 'B(%s)%s' % (unparse(self.database.operators, self.goal, Scope()), '*' if self.end_of_gen else '')
+
+class DefinitionRunItem(RunItem):
+    def __init__(self, database, goal, rules):
+        super(DefinitionRunItem, self).__init__(database, goal)
+        self.generator = self.generate_definitions(goal, [(x[0], x[1].subgoals) for x in rules])
+        self.subgoal_count = 0
+
+    @staticmethod
+    def generate_definitions(goal, clauses):
+        for i, (head, subgoals) in enumerate(clauses):
+
+            local_scope = Scope()
+            local_head = head.copy_to_new_scope(local_scope)
+            local_subgoals = [x.copy_to_new_scope(local_scope) for x in subgoals]
+
+            bound_vars = unify(local_head, goal)
+            if bound_vars is None:
+                continue
+            yield bound_vars, local_subgoals, (i == len(clauses) - 1)
+            unbind_all(bound_vars)
+
+    def do_next(self, goal_stack):
+        self.bound_vars, subgoals, self.end_of_gen = self.generator.next()
+        self.pop_subgoals(goal_stack)
+        for sg in reversed(subgoals):
+            goal_stack.append(sg)
+        self.subgoal_count = len(subgoals)
+        # print 'Pushed %d subgoals' % len(subgoals)
+
+    def pop_subgoals(self, goal_stack):
+        for i in range(self.subgoal_count):
+            goal_stack.pop()
+
+    def __str__(self):
+        return 'D(%s)/%d%s' % (unparse(self.database.operators, self.goal, Scope()), self.subgoal_count, '*' if self.end_of_gen else '')
 
 def prove(goal, database, transmit_cut=False):
     """
@@ -638,8 +690,6 @@ def prove(goal, database, transmit_cut=False):
 
     goal_stack = []
     run_stack = []
-    subgoal_count_stack = []
-    bound_vars_stack = []
 
     goal = goal.resolve()
 
@@ -647,93 +697,69 @@ def prove(goal, database, transmit_cut=False):
     for sg in reversed(subgoals):
         goal_stack.append(sg)
 
-    def generate_clauses(goal, clauses):
-        for head, subgoals in clauses:
+    def create_generator_item(gen_goal):
+        if isinstance(gen_goal, Variable):
+            raise Exception('No rules for unbound variable')
+        functor = gen_goal.get_functor()
+        rules = database.get_rules(functor)
+        if len(rules) == 0:
+            raise Exception('No rules for functor %s', functor)
 
-            local_scope = Scope()
-            local_head = head.copy_to_new_scope(local_scope)
-            local_subgoals = [x.copy_to_new_scope(local_scope) for x in subgoals]
+        if len(rules) == 1 and not hasattr(rules[0][1], 'subgoals'):
+            builtin = rules[0][1]
+            new_gen_item = BuiltinRunItem(database, gen_goal, builtin)
+        else:
+            new_gen_item = DefinitionRunItem(database, gen_goal, rules)
+        return new_gen_item
 
-            bound_vars = unify(local_head, goal)
-            if bound_vars is None:
-                continue
-            yield bound_vars, local_subgoals
-            unbind_all(bound_vars)
+    def all_bound_vars():
+        return set.union(*(x.bound_vars for x in run_stack))
 
-    def pop_subgoals():
-        subgoals_to_pop = subgoal_count_stack.pop()
-        for i in range(subgoals_to_pop):
-            goal_stack.pop()
+    def print_stacks():
+        for run_item in run_stack:
+            print run_item,
+        print '   ',
+        for goal in goal_stack:
+            print unparse(database.operators, goal, Scope()),
+        print
 
     #print 'Proving goals: ', [unparse(database.operators, x, Scope()) for x in goal_stack]
     while True:
 
         if len(goal_stack) == 0:
-            all_bound_vars = set.union(*bound_vars_stack)
-            yield all_bound_vars
+            yield all_bound_vars()
         else:
             next_goal = goal_stack.pop()
-            next_goal = next_goal.resolve()
-            if isinstance(next_goal, Variable):
-                raise Exception('No rules for unbound variable')
-            functor = next_goal.get_functor()
-            rules = database.get_rules(functor)
-            if len(rules) == 0:
-                raise Exception('No rules for functor %s', functor)
-
-            if (len(rules) == 1 and not hasattr(rules[0][1], 'subgoals')):
-                builtin = rules[0][1]
-                gen = iter(builtin(next_goal, database))
-                run_stack.append((BUILTIN, next_goal, gen))
-                #print 'Pushed builtin gen', len(run_stack)
-            else:
-                clauses = [(x[0], x[1].subgoals) for x in rules]
-                gen = generate_clauses(next_goal, clauses)
-                run_stack.append((DEFINITION, next_goal, gen))
-                subgoal_count_stack.append(0)
-                #print 'Pushed definition gen', len(run_stack)
-            bound_vars_stack.append(set())
+            gen_item = create_generator_item(next_goal.resolve())
+            run_stack.append(gen_item)
+            # print 'Pushed generator item', len(run_stack), gen_item
 
         while len(run_stack) > 0:
             try:
-                bound_vars_stack.pop()
-                typ, gen_goal, gen = run_stack[-1]
-                result = gen.next()
-                if typ is DEFINITION:
-                    pop_subgoals()
-                    new_bound_vars, subgoals = result
-                    for sg in reversed(subgoals):
-                        goal_stack.append(sg)
-                    subgoal_count_stack.append(len(subgoals))
-                    #print 'Pushed %d subgoals' % len(subgoals)
-                elif typ is BUILTIN:
-                    new_bound_vars = result
-                else:
-                    raise Exception
-                bound_vars_stack.append(new_bound_vars)
-                #print 'Fetched from gen', len(run_stack)
+                current_run_item = run_stack[-1]
+                current_run_item.do_next(goal_stack)
+                #print 'Fetched from gen', len(run_stack), len(goal_stack)
                 break
             except StopIteration:
-                typ, gen_goal, gen = run_stack.pop()
+                run_item = run_stack.pop()
                 #print 'Popped gen', len(run_stack)
-                if typ is DEFINITION:
-                    pop_subgoals()
-                goal_stack.append(gen_goal)
+                if isinstance(run_item, DefinitionRunItem):
+                    run_item.pop_subgoals(goal_stack)
+                goal_stack.append(run_item.goal)
             except CutBacktrack:
                 # At this point, the cut is the top of the run stack.  We pop it and push it back to the goal stack.
                 # We must then pop (and unbind from) generators until the cut has disappeared from the goal stack.
-                typ, gen_goal, gen = run_stack.pop()
-                goal_stack.append(gen_goal)
+                run_item = run_stack.pop()
+                goal_stack.append(run_item.generator)
                 goal_stack_len = len(goal_stack)
                 while len(run_stack) > 0:
-                    typ, gen_goal, gen = run_stack.pop()
-                    bound_vars = bound_vars_stack.pop()
-                    unbind_all(bound_vars)
-                    if typ is DEFINITION:
-                        pop_subgoals()
-                    goal_stack.append(gen_goal)
+                    run_item = run_stack.pop()
+                    unbind_all(run_item.bound_vars)
+                    if isinstance(run_item, DefinitionRunItem):
+                        run_item.pop_subgoals(goal_stack)
+                    goal_stack.append(run_item.goal)
 
-                    if typ is DEFINITION and len(goal_stack) < goal_stack_len:
+                    if isinstance(run_item, DefinitionRunItem) and len(goal_stack) < goal_stack_len:
                         break
 
                 # If we were called with transmit_cut (e.g. by semicolon_rule), and we've not yet encountered the
