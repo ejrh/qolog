@@ -298,7 +298,7 @@ class Compiler(object):
     def allocate_registers(self, term, reg_allocation):
         def get_reg(term):
             if term not in reg_allocation:
-                reg_allocation[term] = len(reg_allocation)
+                reg_allocation[term] = len(reg_allocation) + 1
             return reg_allocation[term]
 
         term = term.resolve()
@@ -318,15 +318,15 @@ class Compiler(object):
         """
             >>> c = Compiler()
             >>> c.compile_query(Atom('a'))
-            [(put_structure, ('a', 0), 0)]
+            [(put_structure, ('a', 0), 1)]
             >>> c.compile_query(Variable())
-            [(set_variable, 0)]
+            [(set_variable, 1)]
             >>> c.compile_query(Compound('f', Atom('a'), Variable()))
-            [(put_structure, ('a', 0), 1), (put_structure, ('f', 2), 0), (set_value, 1), (set_variable, 2)]
+            [(put_structure, ('a', 0), 2), (put_structure, ('f', 2), 1), (set_value, 2), (set_variable, 3)]
             >>> Z = Variable()
             >>> W = Variable()
             >>> c.compile_query(Compound('p', Z, Compound('h', Z, W), Compound('f', W)))
-            [(put_structure, ('h', 2), 2), (set_variable, 1), (set_variable, 4), (put_structure, ('f', 1), 3), (set_value, 4), (put_structure, ('p', 3), 0), (set_value, 1), (set_value, 2), (set_value, 3)]
+            [(put_structure, ('h', 2), 3), (set_variable, 2), (set_variable, 5), (put_structure, ('f', 1), 4), (set_value, 5), (put_structure, ('p', 3), 1), (set_value, 2), (set_value, 3), (set_value, 4)]
         """
 
         if reg_allocation is None:
@@ -369,15 +369,15 @@ class Compiler(object):
         """
             >>> c = Compiler()
             >>> c.compile_program(Atom('a'))
-            [(get_structure, ('a', 0), 0)]
+            [(get_structure, ('a', 0), 1)]
             >>> c.compile_program(Variable())
-            [(unify_variable, 0)]
+            [(unify_variable, 1)]
             >>> c.compile_program(Compound('f', Atom('a'), Variable()))
-            [(get_structure, ('f', 2), 0), (unify_variable, 1), (unify_variable, 2), (get_structure, ('a', 0), 1)]
+            [(get_structure, ('f', 2), 1), (unify_variable, 2), (unify_variable, 3), (get_structure, ('a', 0), 2)]
             >>> X = Variable()
             >>> Y = Variable()
             >>> c.compile_program(Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y))
-            [(get_structure, ('p', 3), 0), (unify_variable, 1), (unify_variable, 2), (unify_variable, 3), (get_structure, ('f', 1), 1), (unify_variable, 4), (get_structure, ('h', 2), 2), (unify_value, 3), (unify_variable, 5), (get_structure, ('f', 1), 5), (unify_variable, 6), (get_structure, ('a', 0), 6)]
+            [(get_structure, ('p', 3), 1), (unify_variable, 2), (unify_variable, 3), (unify_variable, 4), (get_structure, ('f', 1), 2), (unify_variable, 5), (get_structure, ('h', 2), 3), (unify_value, 4), (unify_variable, 6), (get_structure, ('f', 1), 6), (unify_variable, 7), (get_structure, ('a', 0), 7)]
         """
 
         if reg_allocation is None:
@@ -492,7 +492,9 @@ def print_heap(heap):
             if i != 0:
                 print
             print '[%2d]   ' % i,
-        if type(cell[0]) is str:
+        if cell[0] is None:
+            s = '     '
+        elif type(cell[0]) is str:
             s = '%s/%s' % cell
         else:
             s = '%s %s' % cell
@@ -501,29 +503,35 @@ def print_heap(heap):
 
 class WAMTest(unittest.TestCase):
     def execute_fig_2_3(self, wam):
-        wam.put_structure(('h', 2), 2)
-        wam.set_variable(1)
-        wam.set_variable(4)
-        wam.put_structure(('f', 1), 3)
-        wam.set_value(4)
-        wam.put_structure(('p', 3), 0)
-        wam.set_value(1)
-        wam.set_value(2)
-        wam.set_value(3)
+        """
+            Compiled code for L_0 query ?- p(Z, h(Z, W), f(W)).
+        """
+        wam.put_structure(('h', 2), 3)   # ?- X3 = h
+        wam.set_variable(2)              #          (Z,
+        wam.set_variable(5)              #             W),
+        wam.put_structure(('f', 1), 4)   #    X4 = f
+        wam.set_value(5)                 #          (W),
+        wam.put_structure(('p', 3), 1)   #    X1 = p
+        wam.set_value(2)                 #          (Z,
+        wam.set_value(3)                 #             X3,
+        wam.set_value(4)                 #                X4).
 
     def execute_fig_2_4(self, wam):
-        wam.get_structure(('p', 3), 0)
-        wam.unify_variable(1)
-        wam.unify_variable(2)
-        wam.unify_variable(3)
-        wam.get_structure(('f', 1), 1)
-        wam.unify_variable(4)
-        wam.get_structure(('h', 2), 2)
-        wam.unify_value(3)
-        wam.unify_variable(5)
-        wam.get_structure(('f', 1), 5)
-        wam.unify_variable(6)
-        wam.get_structure(('a', 0), 6)
+        """
+            Compiled code for L_0 program p(f(X), h(Y, f(a)), Y).
+        """
+        wam.get_structure(('p', 3), 1)   # X1 = p
+        wam.unify_variable(2)            #       (X2,
+        wam.unify_variable(3)            #           X3,
+        wam.unify_variable(4)            #              Y),
+        wam.get_structure(('f', 1), 2)   # X2 = f
+        wam.unify_variable(5)            #       (X),
+        wam.get_structure(('h', 2), 3)   # X3 = h
+        wam.unify_value(4)               #       (Y,
+        wam.unify_variable(6)            #          X6),
+        wam.get_structure(('f', 1), 6)   # X6 = f
+        wam.unify_variable(7)            #       (X7),
+        wam.get_structure(('a', 0), 7)   # X7 = a.
 
     def test_ex_2_1(self):
         """
@@ -575,11 +583,11 @@ class WAMTest(unittest.TestCase):
 
         wam = WAM()
         self.execute_fig_2_3(wam)
-        aW = wam.deref_reg(4)
-        aZ = wam.deref_reg(1)
+        aW = wam.deref_reg(5)
+        aZ = wam.deref_reg(2)
         self.execute_fig_2_4(wam)
-        aX = wam.deref_reg(4)
-        aY = wam.deref_reg(3)
+        aX = wam.deref_reg(5)
+        aY = wam.deref_reg(4)
         self.assertEqual(wam.get_term_repr(aW), 'f(a)')
         self.assertEqual(wam.get_term_repr(aX), 'f(a)')
         self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
@@ -600,18 +608,18 @@ class WAMTest(unittest.TestCase):
         query = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
         instrs = compiler.compile_query(query)
         self.assertEqual(instrs, [
-            (put_structure, ('f', 1), 1),
+            (put_structure, ('f', 1), 2),
+            (set_variable, 5),
+            (put_structure, ('a', 0), 7),
+            (put_structure, ('f', 1), 6),
+            (set_value, 7),
+            (put_structure, ('h', 2), 3),
             (set_variable, 4),
-            (put_structure, ('a', 0), 6),
-            (put_structure, ('f', 1), 5),
             (set_value, 6),
-            (put_structure, ('h', 2), 2),
-            (set_variable, 3),
-            (set_value, 5),
-            (put_structure, ('p', 3), 0),
-            (set_value, 1),
+            (put_structure, ('p', 3), 1),
             (set_value, 2),
-            (set_value, 3)
+            (set_value, 3),
+            (set_value, 4)
         ])
 
         W = Variable()
@@ -619,15 +627,15 @@ class WAMTest(unittest.TestCase):
         program = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
         instrs = compiler.compile_program(program)
         self.assertEqual(instrs, [
-            (get_structure, ('p', 3), 0),
-            (unify_variable, 1),
+            (get_structure, ('p', 3), 1),
             (unify_variable, 2),
             (unify_variable, 3),
-            (get_structure, ('h', 2), 2),
-            (unify_value, 1),
             (unify_variable, 4),
-            (get_structure, ('f', 1), 3),
-            (unify_value, 4)
+            (get_structure, ('h', 2), 3),
+            (unify_value, 2),
+            (unify_variable, 5),
+            (get_structure, ('f', 1), 4),
+            (unify_value, 5)
         ])
 
     def test_ex_2_5(self):
