@@ -672,7 +672,7 @@ class WAMTest(unittest.TestCase):
         self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
         self.assertEqual(wam.get_term_repr(aZ), 'f(f(a))')
 
-if __name__ == '__main__':
+def main():
     from term_parser import parse, unparse
 
     try:
@@ -720,3 +720,6 @@ if __name__ == '__main__':
     print_heap(wam.heap)
     print 'Registers:'
     print_heap(wam.reg_stack)
+
+if __name__ == '__main__':
+    main()
