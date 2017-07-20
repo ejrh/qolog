@@ -15,8 +15,211 @@ def enums(s):
 REF, STR = enums('REF STR')
 READ, WRITE = enums('READ WRITE')
 
-put_structure, set_variable, set_value = enums('put_structure set_variable set_value')
-get_structure, unify_variable, unify_value = enums('get_structure unify_variable unify_value')
+class Instruction(object):
+    def __init__(self, *args):
+        self.args = args
+
+    def __eq__(self, other):
+        if self.__class__ is not other.__class__:
+            return False
+        if self.args != other.args:
+            return False
+        return True
+
+    def __repr__(self):
+        name = self.get_name()
+        args_str = ', '.join(repr(x) for x in self.get_args())
+        return '%s(%s)' % (name, args_str)
+
+    def get_name(self):
+        return self.__class__.__name__
+
+    def get_args(self):
+        return self.args
+
+class put_structure(Instruction):
+    """
+        Push a new STR (and adjoining functor) cell onto the heap and copy that cell into the
+        allocated register address.
+
+        >>> w = WAM()
+        >>> put_structure(('f', 2), 0).execute(w)
+        >>> w.heap
+        [(STR, 1), ('f', 2)]
+        >>> w.reg_stack
+        [(REF, 0)]
+    """
+
+    def execute(self, wam):
+        functor, reg_idx = self.args
+        h = len(wam.heap)
+        wam.heap.append((STR, h + 1))
+        wam.heap.append(functor)
+        wam.ensure_stack(reg_idx)
+        wam.reg_stack[reg_idx] = (REF, h)  # wam.heap[h]
+
+class set_variable(Instruction):
+    """
+        Push a new REF cell onto the heap containing its own address, and copy it into the
+        given register.
+
+        >>> w = WAM()
+        >>> set_variable(0).execute(w)
+        >>> w.heap
+        [(REF, 0)]
+        >>> w.reg_stack
+        [(REF, 0)]
+    """
+
+    def execute(self, wam):
+        reg_idx, = self.args
+        h = len(wam.heap)
+        wam.heap.append((REF, h))
+        wam.ensure_stack(reg_idx)
+        wam.reg_stack[reg_idx] = wam.heap[h]
+
+class set_value(Instruction):
+    """
+        Push a new cell onto the heap and copy into it the register's value.
+
+        >>> w = WAM()
+        >>> w.reg_stack = [(REF, 0)]
+        >>> set_value(0).execute(w)
+        >>> w.heap
+        [(REF, 0)]
+    """
+
+    def execute(self, wam):
+        reg_idx, = self.args
+        wam.ensure_stack(reg_idx)
+        wam.heap.append(wam.reg_stack[reg_idx])
+
+class get_structure(Instruction):
+    """
+        Get a structure from the heap and set the read/write mode appropriately.
+
+        >>> w = WAM()
+        >>> w.heap = [(REF, 0)]
+        >>> w.reg_stack = [None, (REF, 0)]
+        >>> get_structure(('f', 2), 1).execute(w)
+        >>> w.mode
+        WRITE
+        >>> w.heap
+        [(REF, 1), (STR, 2), ('f', 2)]
+
+        >>> w.heap = [(STR, 1), ('f', 2)]
+        >>> w.reg_stack = [None, (REF, 0)]
+        >>> get_structure(('f', 2), 1).execute(w)
+        >>> w.mode
+        READ
+        >>> w.next_subterm
+        2
+    """
+
+    def execute(self, wam):
+        functor, reg_idx = self.args
+        wam.next_subterm = 1
+        wam.ensure_stack(reg_idx)
+        idx = wam.deref_reg(reg_idx)
+        if idx is not None:
+            a, b = wam.heap[idx]
+        else:
+            a, b = wam.reg_stack[reg_idx]
+        if a is REF:
+            h = len(wam.heap)
+            wam.heap.append((STR, h+1))
+            wam.heap.append(functor)
+            wam.bind(idx, h)
+            wam.mode = WRITE
+        elif a is STR and wam.heap[b] == functor:
+            wam.next_subterm = b + 1
+            wam.mode = READ
+        else:
+            if a is STR:
+                raise Exception('Functor %s does not match %s' % (wam.heap[b], functor))
+            elif type(a) is str:
+                raise Exception('Register %d points to functor cell!' % reg_idx)
+            else:
+                raise Exception('Register %d has invalid contents!' % reg_idx)
+
+class unify_variable(Instruction):
+    """
+        Unify with a variable on the heap.
+
+        >>> w = WAM()
+        >>> w.heap = [('a', 0)]
+        >>> w.reg_stack = [None, (REF, 0)]
+        >>> w.mode = READ
+        >>> w.next_subterm = 0
+        >>> unify_variable(1).execute(w)
+        >>> w.reg_stack
+        [None, (REF, 0)]
+        >>> w.next_subterm
+        1
+
+        >>> w.heap = []
+        >>> w.reg_stack = [None, ('a', 0)]
+        >>> w.mode = WRITE
+        >>> w.next_subterm = 0
+        >>> unify_variable(1).execute(w)
+        >>> w.heap
+        [(REF, 0)]
+        >>> w.next_subterm
+        1
+    """
+
+    def execute(self, wam):
+        reg_idx, = self.args
+        wam.ensure_stack(reg_idx)
+        if wam.mode == READ:
+            wam.reg_stack[reg_idx] = (REF, wam.next_subterm) #self.heap[self.next_subterm]
+        elif wam.mode == WRITE:
+            h = len(wam.heap)
+            wam.heap.append((REF, h))
+            wam.reg_stack[reg_idx] = wam.heap[h]
+        else:
+            raise Exception('Mode not set!')
+        wam.next_subterm += 1
+
+class unify_value(Instruction):
+    """
+        Unify with a value on the heap.
+
+        >>> w = WAM()
+        >>> w.heap = [('a', 0)]
+        >>> w.reg_stack = [None, (REF, 0)]
+        >>> w.mode = READ
+        >>> w.next_subterm = 0
+        >>> unify_variable(1).execute(w)
+        >>> w.reg_stack
+        [None, (REF, 0)]
+        >>> w.next_subterm
+        1
+
+        >>> w.heap = []
+        >>> w.reg_stack = [None, ('a', 0)]
+        >>> w.mode = WRITE
+        >>> w.next_subterm = 0
+        >>> unify_variable(1).execute(w)
+        >>> w.heap
+        [(REF, 0)]
+        >>> w.next_subterm
+        1
+    """
+
+    def execute(self, wam):
+        reg_idx, = self.args
+        wam.ensure_stack(reg_idx)
+        if wam.mode == READ:
+            idx = wam.deref_reg(reg_idx)
+            assert idx is not None
+            wam.unify(idx, wam.next_subterm)
+        elif wam.mode == WRITE:
+            h = len(wam.heap)
+            wam.heap.append(wam.reg_stack[reg_idx])
+        else:
+            raise Exception('Mode not set!')
+        wam.next_subterm += 1
 
 class WAM(object):
     def __init__(self):
@@ -107,172 +310,6 @@ class WAM(object):
                 break
         return not fail
 
-    def put_structure(self, functor, reg_idx):
-        """
-            Push a new STR (and adjoining functor) cell onto the heap and copy that cell into the
-            allocated register address.
-
-            >>> w = WAM()
-            >>> w.put_structure(('f', 2), 0)
-            >>> w.heap
-            [(STR, 1), ('f', 2)]
-            >>> w.reg_stack
-            [(REF, 0)]
-        """
-        h = len(self.heap)
-        self.heap.append((STR, h+1))
-        self.heap.append(functor)
-        self.ensure_stack(reg_idx)
-        self.reg_stack[reg_idx] = (REF, h) #self.heap[h]
-
-    def set_variable(self, reg_idx):
-        """
-            Push a new REF cell onto the heap containing its own address, and copy it into the
-            given register.
-
-            >>> w = WAM()
-            >>> w.set_variable(0)
-            >>> w.heap
-            [(REF, 0)]
-            >>> w.reg_stack
-            [(REF, 0)]
-        """
-        h = len(self.heap)
-        self.heap.append((REF, h))
-        self.ensure_stack(reg_idx)
-        self.reg_stack[reg_idx] = self.heap[h]
-
-    def set_value(self, reg_idx):
-        """
-            Push a new cell onto the heap and copy into it the register's value.
-
-            >>> w = WAM()
-            >>> w.reg_stack = [(REF, 0)]
-            >>> w.set_value(0)
-            >>> w.heap
-            [(REF, 0)]
-        """
-        self.ensure_stack(reg_idx)
-        self.heap.append(self.reg_stack[reg_idx])
-
-    def get_structure(self, functor, reg_idx):
-        """
-            Get a structure from the heap and set the read/write mode appropriately.
-
-            >>> w = WAM()
-            >>> w.heap = [(REF, 0)]
-            >>> w.reg_stack = [None, (REF, 0)]
-            >>> w.get_structure(('f', 2), 1)
-            >>> w.mode
-            WRITE
-            >>> w.heap
-            [(REF, 1), (STR, 2), ('f', 2)]
-
-            >>> w.heap = [(STR, 1), ('f', 2)]
-            >>> w.reg_stack = [None, (REF, 0)]
-            >>> w.get_structure(('f', 2), 1)
-            >>> w.mode
-            READ
-            >>> w.next_subterm
-            2
-        """
-        self.next_subterm = 1
-        self.ensure_stack(reg_idx)
-        idx = self.deref_reg(reg_idx)
-        if idx is not None:
-            a, b = self.heap[idx]
-        else:
-            a, b = self.reg_stack[reg_idx]
-        if a is REF:
-            h = len(self.heap)
-            self.heap.append((STR, h+1))
-            self.heap.append(functor)
-            self.bind(idx, h)
-            self.mode = WRITE
-        elif a is STR and self.heap[b] == functor:
-            self.next_subterm = b + 1
-            self.mode = READ
-        else:
-            if a is STR:
-                raise Exception('Functor %s does not match %s' % (self.heap[b], functor))
-            elif type(a) is str:
-                raise Exception('Register %d points to functor cell!' % reg_idx)
-            else:
-                raise Exception('Register %d has invalid contents!' % reg_idx)
-
-    def unify_variable(self, reg_idx):
-        """
-            Unify with a variable on the heap.
-
-            >>> w = WAM()
-            >>> w.heap = [('a', 0)]
-            >>> w.reg_stack = [None, (REF, 0)]
-            >>> w.mode = READ
-            >>> w.next_subterm = 0
-            >>> w.unify_variable(1)
-            >>> w.reg_stack
-            [None, (REF, 0)]
-            >>> w.next_subterm
-            1
-
-            >>> w.heap = []
-            >>> w.reg_stack = [None, ('a', 0)]
-            >>> w.mode = WRITE
-            >>> w.next_subterm = 0
-            >>> w.unify_variable(1)
-            >>> w.heap
-            [(REF, 0)]
-            >>> w.next_subterm
-            1
-        """
-        self.ensure_stack(reg_idx)
-        if self.mode == READ:
-            self.reg_stack[reg_idx] = (REF, self.next_subterm) #self.heap[self.next_subterm]
-        elif self.mode == WRITE:
-            h = len(self.heap)
-            self.heap.append((REF, h))
-            self.reg_stack[reg_idx] = self.heap[h]
-        else:
-            raise Exception('Mode not set!')
-        self.next_subterm += 1
-
-    def unify_value(self, reg_idx):
-        """
-            Unify with a value on the heap.
-
-            >>> w = WAM()
-            >>> w.heap = [('a', 0)]
-            >>> w.reg_stack = [None, (REF, 0)]
-            >>> w.mode = READ
-            >>> w.next_subterm = 0
-            >>> w.unify_variable(1)
-            >>> w.reg_stack
-            [None, (REF, 0)]
-            >>> w.next_subterm
-            1
-
-            >>> w.heap = []
-            >>> w.reg_stack = [None, ('a', 0)]
-            >>> w.mode = WRITE
-            >>> w.next_subterm = 0
-            >>> w.unify_variable(1)
-            >>> w.heap
-            [(REF, 0)]
-            >>> w.next_subterm
-            1
-        """
-        self.ensure_stack(reg_idx)
-        if self.mode == READ:
-            idx = self.deref_reg(reg_idx)
-            assert idx is not None
-            self.unify(idx, self.next_subterm)
-        elif self.mode == WRITE:
-            h = len(self.heap)
-            self.heap.append(self.reg_stack[reg_idx])
-        else:
-            raise Exception('Mode not set!')
-        self.next_subterm += 1
-
     def get_term_repr(self, idx):
         idx = self.deref(idx)
         a, b = self.heap[idx]
@@ -289,10 +326,7 @@ class WAM(object):
 
     def execute(self, instrs):
         for instr in instrs:
-            op = instr[0]
-            args = instr[1:]
-            f = getattr(self, op.name)
-            f(*args)
+            instr.execute(self)
 
 class Compiler(object):
     def allocate_registers(self, term, reg_allocation):
@@ -318,15 +352,15 @@ class Compiler(object):
         """
             >>> c = Compiler()
             >>> c.compile_query(Atom('a'))
-            [(put_structure, ('a', 0), 1)]
+            [put_structure(('a', 0), 1)]
             >>> c.compile_query(Variable())
-            [(set_variable, 1)]
+            [set_variable(1)]
             >>> c.compile_query(Compound('f', Atom('a'), Variable()))
-            [(put_structure, ('a', 0), 2), (put_structure, ('f', 2), 1), (set_value, 2), (set_variable, 3)]
+            [put_structure(('a', 0), 2), put_structure(('f', 2), 1), set_value(2), set_variable(3)]
             >>> Z = Variable()
             >>> W = Variable()
             >>> c.compile_query(Compound('p', Z, Compound('h', Z, W), Compound('f', W)))
-            [(put_structure, ('h', 2), 3), (set_variable, 2), (set_variable, 5), (put_structure, ('f', 1), 4), (set_value, 5), (put_structure, ('p', 3), 1), (set_value, 2), (set_value, 3), (set_value, 4)]
+            [put_structure(('h', 2), 3), set_variable(2), set_variable(5), put_structure(('f', 1), 4), set_value(5), put_structure(('p', 3), 1), set_value(2), set_value(3), set_value(4)]
         """
 
         if reg_allocation is None:
@@ -338,7 +372,7 @@ class Compiler(object):
 
         query = query.resolve()
         if isinstance(query, Atom):
-            return [(put_structure, query.get_functor(), reg_allocation[query])]
+            return [put_structure(query.get_functor(), reg_allocation[query])]
         elif isinstance(query, Compound):
             instrs = []
             # Build nested terms
@@ -349,35 +383,35 @@ class Compiler(object):
                 instrs.extend(self.compile_query(subterm, reg_allocation, vars_set))
                 vars_set.add(subterm)
             # Build this term
-            instrs.append((put_structure, query.get_functor(), reg_allocation[query]))
+            instrs.append(put_structure(query.get_functor(), reg_allocation[query]))
             for subterm in query.subterms:
                 subterm = subterm.resolve()
                 if subterm in vars_set:
-                    instrs.append((set_value, reg_allocation[subterm]))
+                    instrs.append(set_value(reg_allocation[subterm]))
                 else:
                     vars_set.add(subterm)
-                    instrs.append((set_variable, reg_allocation[subterm]))
+                    instrs.append(set_variable(reg_allocation[subterm]))
             return instrs
         elif isinstance(query, Variable):
             if query in vars_set:
-                return [(set_value, reg_allocation[query])]
+                return [set_value(reg_allocation[query])]
             else:
                 vars_set.add(query)
-                return [(set_variable, reg_allocation[query])]
+                return [set_variable(reg_allocation[query])]
 
     def compile_program(self, program, reg_allocation=None, vars_set=None):
         """
             >>> c = Compiler()
             >>> c.compile_program(Atom('a'))
-            [(get_structure, ('a', 0), 1)]
+            [get_structure(('a', 0), 1)]
             >>> c.compile_program(Variable())
-            [(unify_variable, 1)]
+            [unify_variable(1)]
             >>> c.compile_program(Compound('f', Atom('a'), Variable()))
-            [(get_structure, ('f', 2), 1), (unify_variable, 2), (unify_variable, 3), (get_structure, ('a', 0), 2)]
+            [get_structure(('f', 2), 1), unify_variable(2), unify_variable(3), get_structure(('a', 0), 2)]
             >>> X = Variable()
             >>> Y = Variable()
             >>> c.compile_program(Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y))
-            [(get_structure, ('p', 3), 1), (unify_variable, 2), (unify_variable, 3), (unify_variable, 4), (get_structure, ('f', 1), 2), (unify_variable, 5), (get_structure, ('h', 2), 3), (unify_value, 4), (unify_variable, 6), (get_structure, ('f', 1), 6), (unify_variable, 7), (get_structure, ('a', 0), 7)]
+            [get_structure(('p', 3), 1), unify_variable(2), unify_variable(3), unify_variable(4), get_structure(('f', 1), 2), unify_variable(5), get_structure(('h', 2), 3), unify_value(4), unify_variable(6), get_structure(('f', 1), 6), unify_variable(7), get_structure(('a', 0), 7)]
         """
 
         if reg_allocation is None:
@@ -389,18 +423,18 @@ class Compiler(object):
 
         program = program.resolve()
         if isinstance(program, Atom):
-            return [(get_structure, program.get_functor(), reg_allocation[program])]
+            return [get_structure(program.get_functor(), reg_allocation[program])]
         elif isinstance(program, Compound):
             instrs = []
             # Build this term
-            instrs.append((get_structure, program.get_functor(), reg_allocation[program]))
+            instrs.append(get_structure(program.get_functor(), reg_allocation[program]))
             for subterm in program.subterms:
                 subterm = subterm.resolve()
                 if subterm in vars_set:
-                    instrs.append((unify_value, reg_allocation[subterm]))
+                    instrs.append(unify_value(reg_allocation[subterm]))
                 else:
                     vars_set.add(subterm)
-                    instrs.append((unify_variable, reg_allocation[subterm]))
+                    instrs.append(unify_variable(reg_allocation[subterm]))
             # Build nested terms
             for subterm in program.subterms:
                 subterm = subterm.resolve()
@@ -411,10 +445,10 @@ class Compiler(object):
             return instrs
         elif isinstance(program, Variable):
             if program in vars_set:
-                return [(unify_value, reg_allocation[program])]
+                return [unify_value(reg_allocation[program])]
             else:
                 vars_set.add(program)
-                return [(unify_variable, reg_allocation[program])]
+                return [unify_variable(reg_allocation[program])]
 
     def write_to_heap(self, term, wam, var_idxes=None):
         """
@@ -479,12 +513,12 @@ def print_instrs(instrs):
         return str(arg)
 
     for instr in instrs:
-        op = instr[0]
-        args = instr[1:]
+        name = instr.get_name()
+        args = instr.get_args()
         if len(args) == 0:
-            print op
+            print name
         else:
-            print '%s %s' % (op, ', '.join(arg_str(x) for x in args))
+            print '%s %s' % (name, ', '.join(arg_str(x) for x in args))
 
 def print_heap(heap):
     for i, cell in enumerate(heap):
@@ -502,36 +536,50 @@ def print_heap(heap):
     print
 
 class WAMTest(unittest.TestCase):
-    def execute_fig_2_3(self, wam):
-        """
-            Compiled code for L_0 query ?- p(Z, h(Z, W), f(W)).
-        """
-        wam.put_structure(('h', 2), 3)   # ?- X3 = h
-        wam.set_variable(2)              #          (Z,
-        wam.set_variable(5)              #             W),
-        wam.put_structure(('f', 1), 4)   #    X4 = f
-        wam.set_value(5)                 #          (W),
-        wam.put_structure(('p', 3), 1)   #    X1 = p
-        wam.set_value(2)                 #          (Z,
-        wam.set_value(3)                 #             X3,
-        wam.set_value(4)                 #                X4).
+    fig_2_3_instrs = [
+        put_structure(('h', 2), 3),   # ?- X3 = h
+        set_variable(2),              #          (Z,
+        set_variable(5),              #             W),
+        put_structure(('f', 1), 4),   #    X4 = f
+        set_value(5),                 #          (W),
+        put_structure(('p', 3), 1),   #    X1 = p
+        set_value(2),                 #          (Z,
+        set_value(3),                 #             X3,
+        set_value(4)                  #                X4).
+    ]
 
-    def execute_fig_2_4(self, wam):
-        """
-            Compiled code for L_0 program p(f(X), h(Y, f(a)), Y).
-        """
-        wam.get_structure(('p', 3), 1)   # X1 = p
-        wam.unify_variable(2)            #       (X2,
-        wam.unify_variable(3)            #           X3,
-        wam.unify_variable(4)            #              Y),
-        wam.get_structure(('f', 1), 2)   # X2 = f
-        wam.unify_variable(5)            #       (X),
-        wam.get_structure(('h', 2), 3)   # X3 = h
-        wam.unify_value(4)               #       (Y,
-        wam.unify_variable(6)            #          X6),
-        wam.get_structure(('f', 1), 6)   # X6 = f
-        wam.unify_variable(7)            #       (X7),
-        wam.get_structure(('a', 0), 7)   # X7 = a.
+    fig_2_4_instrs = [
+        get_structure(('p', 3), 1),   # X1 = p
+        unify_variable(2),            #       (X2,
+        unify_variable(3),            #           X3,
+        unify_variable(4),            #              Y),
+        get_structure(('f', 1), 2),   # X2 = f
+        unify_variable(5),            #       (X),
+        get_structure(('h', 2), 3),   # X3 = h
+        unify_value(4),               #       (Y,
+        unify_variable(6),            #          X6),
+        get_structure(('f', 1), 6),   # X6 = f
+        unify_variable(7),            #       (X7),
+        get_structure(('a', 0), 7)    # X7 = a.
+    ]
+
+    def test_fig_2_3(self):
+        compiler = Compiler()
+
+        Z = Variable()
+        W = Variable()
+        query = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
+        instrs = compiler.compile_query(query)
+        self.assertEqual(instrs, self.fig_2_3_instrs)
+
+    def test_fig_2_4(self):
+        compiler = Compiler()
+
+        X = Variable()
+        Y = Variable()
+        program = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
+        instrs = compiler.compile_program(program)
+        self.assertEqual(instrs, self.fig_2_4_instrs)
 
     def test_ex_2_1(self):
         """
@@ -543,7 +591,7 @@ class WAMTest(unittest.TestCase):
         """
 
         wam = WAM()
-        self.execute_fig_2_3(wam)
+        wam.execute(self.fig_2_3_instrs)
         #s = wam.get_term_repr(wam.deref_reg(0))
         s = wam.get_term_repr(7)
         self.assertEqual(s, 'p(_G2, h(_G2, _G3), f(_G3))')
@@ -582,10 +630,10 @@ class WAMTest(unittest.TestCase):
         """
 
         wam = WAM()
-        self.execute_fig_2_3(wam)
+        wam.execute(self.fig_2_3_instrs)
         aW = wam.deref_reg(5)
         aZ = wam.deref_reg(2)
-        self.execute_fig_2_4(wam)
+        wam.execute(self.fig_2_4_instrs)
         aX = wam.deref_reg(5)
         aY = wam.deref_reg(4)
         self.assertEqual(wam.get_term_repr(aW), 'f(a)')
@@ -608,18 +656,18 @@ class WAMTest(unittest.TestCase):
         query = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
         instrs = compiler.compile_query(query)
         self.assertEqual(instrs, [
-            (put_structure, ('f', 1), 2),
-            (set_variable, 5),
-            (put_structure, ('a', 0), 7),
-            (put_structure, ('f', 1), 6),
-            (set_value, 7),
-            (put_structure, ('h', 2), 3),
-            (set_variable, 4),
-            (set_value, 6),
-            (put_structure, ('p', 3), 1),
-            (set_value, 2),
-            (set_value, 3),
-            (set_value, 4)
+            put_structure( ('f', 1), 2),
+            set_variable(5),
+            put_structure(('a', 0), 7),
+            put_structure(('f', 1), 6),
+            set_value(7),
+            put_structure(('h', 2), 3),
+            set_variable(4),
+            set_value(6),
+            put_structure(('p', 3), 1),
+            set_value(2),
+            set_value(3),
+            set_value(4)
         ])
 
         W = Variable()
@@ -627,15 +675,15 @@ class WAMTest(unittest.TestCase):
         program = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
         instrs = compiler.compile_program(program)
         self.assertEqual(instrs, [
-            (get_structure, ('p', 3), 1),
-            (unify_variable, 2),
-            (unify_variable, 3),
-            (unify_variable, 4),
-            (get_structure, ('h', 2), 3),
-            (unify_value, 2),
-            (unify_variable, 5),
-            (get_structure, ('f', 1), 4),
-            (unify_value, 5)
+            get_structure(('p', 3), 1),
+            unify_variable(2),
+            unify_variable(3),
+            unify_variable(4),
+            get_structure(('h', 2), 3),
+            unify_value(2),
+            unify_variable(5),
+            get_structure(('f', 1), 4),
+            unify_value(5)
         ])
 
     def test_ex_2_5(self):
