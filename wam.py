@@ -221,12 +221,68 @@ class unify_value(Instruction):
             raise Exception('Mode not set!')
         wam.next_subterm += 1
 
+class call(Instruction):
+    def execute(self, wam):
+        functor, = self.args
+        wam.p = wam.labels[functor]
+
+class proceed(Instruction):
+    def execute(self, wam):
+        pass
+
+class put_variable(Instruction):
+    """
+        Push a new unbound REF cell onto the heap and copy it into that variable's register as
+        well as an argument register.
+    """
+
+    def execute(self, wam):
+        reg_idx, arg_idx = self.args
+        wam.ensure_stack(reg_idx)
+        wam.ensure_stack(arg_idx)
+        h = len(wam.heap)
+        wam.heap.append((REF, h))
+        wam.reg_stack[reg_idx] = wam.heap[h]
+        wam.reg_stack[arg_idx] = wam.heap[h]
+
+class put_value(Instruction):
+    """
+        Copy a register into an argument register.
+    """
+
+    def execute(self, wam):
+        reg_idx, arg_idx = self.args
+        wam.reg_stack[arg_idx] = wam.reg_stack[reg_idx]
+
+class get_variable(Instruction):
+    """
+        Copy an argument register into another register.
+    """
+
+    def execute(self, wam):
+        reg_idx, arg_idx = self.args
+        wam.reg_stack[reg_idx] = wam.reg_stack[arg_idx]
+
+class get_value(Instruction):
+    """
+        Unify a register with an argument register.
+    """
+
+    def execute(self, wam):
+        reg_idx, arg_idx = self.args
+        reg_idx = wam.deref_reg(reg_idx)
+        arg_idx = wam.deref_reg(arg_idx)
+        wam.unify(reg_idx, arg_idx)
+
 class WAM(object):
     def __init__(self):
         self.heap = []
         self.reg_stack = []
         self.mode = None
         self.next_subterm = None
+        self.code = []
+        self.p = 0
+        self.labels = {}
 
     def ensure_stack(self, idx):
         if len(self.reg_stack) <= idx:
@@ -328,6 +384,17 @@ class WAM(object):
         for instr in instrs:
             instr.execute(self)
 
+    def load(self, functor, instrs):
+        if functor is not None:
+            self.labels[functor] = len(self.code)
+        self.code.extend(instrs)
+
+    def run(self):
+        while self.p < len(self.code):
+            instr = self.code[self.p]
+            self.execute([instr])
+            self.p += 1
+
 class Compiler(object):
     def allocate_registers(self, term, reg_allocation):
         def get_reg(term):
@@ -335,20 +402,26 @@ class Compiler(object):
                 reg_allocation[term] = len(reg_allocation) + 1
             return reg_allocation[term]
 
-        term = term.resolve()
-        get_reg(term)
+        if isinstance(term, (list, tuple)):
+            subterms = term
+        else:
+            term = term.resolve()
+            get_reg(term)
+            if isinstance(term, Compound):
+                subterms = term.subterms
+            else:
+                subterms = []
 
-        if isinstance(term, Compound):
-            # Immediate children are allocated registers
-            for subterm in term.subterms:
-                get_reg(subterm.resolve())
+        # Immediate children are allocated registers
+        for subterm in subterms:
+            get_reg(subterm.resolve())
 
-            # Then other descendents
-            for subterm in term.subterms:
-                subterm = subterm.resolve()
-                self.allocate_registers(subterm, reg_allocation)
+        # Then other descendants
+        for subterm in subterms:
+            subterm = subterm.resolve()
+            self.allocate_registers(subterm, reg_allocation)
 
-    def compile_query(self, query, reg_allocation=None, vars_set=None):
+    def compile_query(self, query, reg_allocation=None, vars_set=None, arg_idx=None):
         """
             >>> c = Compiler()
             >>> c.compile_query(Atom('a'))
@@ -393,13 +466,42 @@ class Compiler(object):
                     instrs.append(set_variable(reg_allocation[subterm]))
             return instrs
         elif isinstance(query, Variable):
-            if query in vars_set:
-                return [set_value(reg_allocation[query])]
+            if arg_idx is not None:
+                if query in vars_set:
+                    return [put_value(reg_allocation[query], arg_idx)]
+                else:
+                    vars_set.add(query)
+                    return [put_variable(reg_allocation[query], arg_idx)]
             else:
-                vars_set.add(query)
-                return [set_variable(reg_allocation[query])]
+                if query in vars_set:
+                    return [set_value(reg_allocation[query])]
+                else:
+                    vars_set.add(query)
+                    return [set_variable(reg_allocation[query])]
 
-    def compile_program(self, program, reg_allocation=None, vars_set=None):
+    def compile_query_m1(self, query, reg_allocation=None, vars_set=None):
+        if isinstance(query, Atom):
+            return [(call, query.get_functor())]
+        elif isinstance(query, Compound):
+            if reg_allocation is None:
+                reg_allocation = {}
+
+            if vars_set is None:
+                vars_set = set()
+                self.allocate_registers(query.subterms, reg_allocation)
+
+            instrs = []
+            for i, subterm in enumerate(query.subterms):
+                subterm = subterm.resolve()
+                instrs.extend(self.compile_query(subterm, reg_allocation, vars_set, arg_idx=(i+1)))
+                vars_set.add(subterm)
+
+            instrs.append(call(query.get_functor()))
+            return instrs
+        elif isinstance(query, Variable):
+            raise Exception("Can't compile query for variable")
+
+    def compile_program(self, program, reg_allocation=None, vars_set=None, arg_idx=None):
         """
             >>> c = Compiler()
             >>> c.compile_program(Atom('a'))
@@ -444,11 +546,40 @@ class Compiler(object):
                 vars_set.add(subterm)
             return instrs
         elif isinstance(program, Variable):
-            if program in vars_set:
-                return [unify_value(reg_allocation[program])]
+            if arg_idx is not None:
+                if program in vars_set:
+                    return [get_value(reg_allocation[program], arg_idx)]
+                else:
+                    vars_set.add(program)
+                    return [get_variable(reg_allocation[program], arg_idx)]
             else:
-                vars_set.add(program)
-                return [unify_variable(reg_allocation[program])]
+                if program in vars_set:
+                    return [unify_value( reg_allocation[program])]
+                else:
+                    vars_set.add(program)
+                    return [unify_variable( reg_allocation[program])]
+
+    def compile_program_m1(self, program, reg_allocation=None, vars_set=None):
+        if isinstance(program, Atom):
+            return [(proceed,)]
+        elif isinstance(program, Compound):
+            if reg_allocation is None:
+                reg_allocation = {}
+
+            if vars_set is None:
+                vars_set = set()
+                self.allocate_registers(program.subterms, reg_allocation)
+
+            instrs = []
+            for i, subterm in enumerate(program.subterms):
+                subterm = subterm.resolve()
+                instrs.extend(self.compile_program(subterm, reg_allocation, vars_set, arg_idx=(i+1)))
+                vars_set.add(subterm)
+
+            instrs.append(proceed())
+            return instrs
+        elif isinstance(program, Variable):
+            raise Exception("Can't compile program for variable")
 
     def write_to_heap(self, term, wam, var_idxes=None):
         """
@@ -563,6 +694,29 @@ class WAMTest(unittest.TestCase):
         get_structure(('a', 0), 7)    # X7 = a.
     ]
 
+    fig_2_9_instrs = [
+        put_variable(4, 1),           # ?- p(Z,
+        put_structure(('h', 2), 2),   #        h
+        set_value(4),                 #         (Z,
+        set_variable(5),              #            W),
+        put_structure(('f', 1), 3),   #               f
+        set_value(5),                 #                (W)
+        call(('p', 3))                #                   ).
+    ]
+
+    fig_2_10_instrs = [
+        get_structure(('f', 1), 1),   # p(f
+        unify_variable(4),            #    (X),
+        get_structure(('h', 2), 2),   #        h
+        unify_variable(5),            #         (Y,
+        unify_variable(6),            #            X6),
+        get_value(5, 3),              #                Y),
+        get_structure(('f', 1), 6),   # X6 = f
+        unify_variable(7),            #        (X7),
+        get_structure(('a', 0), 7),   # X7 = a
+        proceed()                    # .
+    ]
+
     def test_fig_2_3(self):
         compiler = Compiler()
 
@@ -580,6 +734,24 @@ class WAMTest(unittest.TestCase):
         program = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
         instrs = compiler.compile_program(program)
         self.assertEqual(instrs, self.fig_2_4_instrs)
+
+    def test_fig_2_9(self):
+        compiler = Compiler()
+
+        Z = Variable()
+        W = Variable()
+        query = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
+        instrs = compiler.compile_query_m1(query)
+        self.assertEqual(instrs, self.fig_2_9_instrs)
+
+    def test_fig_2_10(self):
+        compiler = Compiler()
+
+        X = Variable()
+        Y = Variable()
+        program = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
+        instrs = compiler.compile_program_m1(program)
+        self.assertEqual(instrs, self.fig_2_10_instrs)
 
     def test_ex_2_1(self):
         """
@@ -720,6 +892,119 @@ class WAMTest(unittest.TestCase):
         self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
         self.assertEqual(wam.get_term_repr(aZ), 'f(f(a))')
 
+    def test_ex_2_6(self):
+        """
+            Exercise 2.6
+
+            Verify that the effect of executing the sequence of M_1 instructions shown in
+            Figure 2.9 produces the same heap representation as that produced by the M_0 code of
+            Figure 2.3 (see Exercise 2.1).
+        """
+
+        wam = WAM()
+        wam.execute(self.fig_2_9_instrs[:-1])   # last instruction is call; remove it
+        self.assertEqual(wam.get_term_repr(wam.deref_reg(1)), '_G0')
+        self.assertEqual(wam.get_term_repr(wam.deref_reg(2)), 'h(_G0, _G4)')
+        self.assertEqual(wam.get_term_repr(wam.deref_reg(3)), 'f(_G4)')
+
+    def test_ex_2_7(self):
+        """
+            Exercise 2.7
+
+            Verify that the effect of executing the sequence of M_1 instructions shown in
+            Figure 2.10 right after that in Figure 2.9 produces the MGU of the terms
+            p(Z, h(Z, W), f(W)) and p(f(X), h(Y, f(a)), Y).  That is, the binding
+            W = f(a), X = f(a), Y = f(f(a)), Z = f(f(a)).
+        """
+
+        wam = WAM()
+        wam.execute(self.fig_2_9_instrs[:-1])   # last instruction is call; remove it
+        wam.execute(self.fig_2_10_instrs)
+        aW = wam.deref_reg(4)
+        aX = wam.deref_reg(4)
+        aY = wam.deref_reg(5)
+        aZ = wam.deref_reg(1)
+        self.assertEqual(wam.get_term_repr(aW), 'f(a)')
+        self.assertEqual(wam.get_term_repr(aX), 'f(a)')
+        self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
+        self.assertEqual(wam.get_term_repr(aZ), 'f(f(a))')
+
+    def test_ex_2_8(self):
+        """
+            Exercise 2.8
+
+            What are the respective sequences of M_1 instructions for L_1 query term
+            ?- p(f(X), h(Y, f(a)), Y) and L_1 program term p(Z, h(Z, W), f(W)) ?
+        """
+
+        compiler = Compiler()
+
+        X = Variable()
+        Y = Variable()
+        query = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
+        instrs = compiler.compile_query_m1(query)
+        self.assertEqual(instrs, [
+            put_structure(('f', 1), 1),
+            set_variable(4),
+            put_structure(('a', 0), 6),
+            put_structure(('f', 1), 5),
+            set_value(6),
+            put_structure(('h', 2), 2),
+            set_variable(3),
+            set_value(5),
+            put_value(3, 3),
+            call(('p', 3))
+        ])
+
+        W = Variable()
+        Z = Variable()
+        program = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
+        instrs = compiler.compile_program_m1(program)
+        self.assertEqual(instrs, [
+            get_variable(1, 1),
+            get_structure(('h', 2), 2),
+            unify_value(1),
+            unify_variable(4),
+            get_structure(('f', 1), 3),
+            unify_value(4),
+            proceed()
+        ])
+
+    def test_ex_2_9(self):
+        """
+            Exercise 2.9
+
+            After doing Exercise 2.8, verify that the effect of executing the sequence you
+            produced yields the same solution as that of Exercise 2.7.
+        """
+
+        compiler = Compiler()
+
+        X = Variable()
+        Y = Variable()
+        query = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
+        query_reg_allocation = {}
+        query_instrs = compiler.compile_query_m1(query, query_reg_allocation)
+
+        W = Variable()
+        Z = Variable()
+        program = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
+        program_reg_allocation = {}
+        program_instrs = compiler.compile_program_m1(program, program_reg_allocation)
+
+        wam = WAM()
+        wam.load(None, query_instrs)
+        wam.load(program.get_functor(), program_instrs)
+        wam.run()
+        aW = wam.deref_reg(program_reg_allocation[W])
+        aX = wam.deref_reg(query_reg_allocation[X])
+        aY = wam.deref_reg(query_reg_allocation[Y])
+        aZ = wam.deref_reg(program_reg_allocation[Z])
+        self.assertEqual(wam.get_term_repr(aW), 'f(a)')
+        self.assertEqual(wam.get_term_repr(aX), 'f(a)')
+        self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
+        self.assertEqual(wam.get_term_repr(aZ), 'f(f(a))')
+
 def main():
     from term_parser import parse, unparse
 
@@ -742,21 +1027,22 @@ def main():
     print
     print 'Compiled query to:'
     query_reg_map = {}
-    query_instrs = compiler.compile_query(query, query_reg_map)
+    query_instrs = compiler.compile_query_m1(query, query_reg_map)
     print_instrs(query_instrs)
     print 'Register allocations are: ', ', '.join('%s: %s' % (n, query_reg_map[v]) for n,v in query_scope.names_to_vars.items())
 
     print
     print 'Compiled program to:'
     program_reg_map = {}
-    program_instrs = compiler.compile_program(program, program_reg_map)
+    program_instrs = compiler.compile_program_m1(program, program_reg_map)
     print_instrs(program_instrs)
     print 'Register allocations are: ', ', '.join('%s: %s' % (n, program_reg_map[v]) for n,v in program_scope.names_to_vars.items())
 
     print
     print 'Running query and program...'
-    wam.execute(query_instrs)
-    wam.execute(program_instrs)
+    wam.load(None, query_instrs)
+    wam.load(program.get_functor(), program_instrs)
+    wam.run()
     for n, v in query_scope.names_to_vars.items():
         print '%s = %s' % (n, wam.get_term_repr(wam.deref_reg(query_reg_map[v])))
     for n, v in program_scope.names_to_vars.items():
