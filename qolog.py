@@ -84,17 +84,6 @@ def comma_rule(term, database):
         for more_bound_vars in prove(t2, database):
             yield bound_vars.union(more_bound_vars)
 
-def find_subgoals(term):
-    subgoals = []
-    def f(target):
-        if target.is_functor(',', 2):
-            for st in target.subterms:
-                f(st)
-        else:
-            subgoals.append(target)
-    f(term)
-    return subgoals
-
 def optimised_comma_rule(term, database):
     """
         An optimised comma rule that builds a list of subgoals from nested

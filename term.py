@@ -183,3 +183,14 @@ def same_integer(t1, t2):
 
 def same_functor(t1, t2):
     return term_equality(t1, t2, Compound, lambda a, b: a.name == b.name and len(a.subterms) == len(b.subterms))
+
+def find_subgoals(term):
+    subgoals = []
+    def f(target):
+        if target.is_functor(',', 2):
+            for st in target.subterms:
+                f(st)
+        else:
+            subgoals.append(target)
+    f(term)
+    return subgoals
