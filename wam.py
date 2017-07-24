@@ -224,7 +224,8 @@ class unify_value(Instruction):
 class call(Instruction):
     def execute(self, wam):
         functor, = self.args
-        wam.p = wam.labels[functor]
+        wam.p = wam.labels[functor] - 1  # -1 because p will be incremented after this instruction
+        #wam.reg_stack = wam.reg_stack[:functor[1]+1]
 
 class proceed(Instruction):
     def execute(self, wam):
@@ -252,6 +253,8 @@ class put_value(Instruction):
 
     def execute(self, wam):
         reg_idx, arg_idx = self.args
+        wam.ensure_stack(reg_idx)
+        wam.ensure_stack(arg_idx)
         wam.reg_stack[arg_idx] = wam.reg_stack[reg_idx]
 
 class get_variable(Instruction):
@@ -261,6 +264,8 @@ class get_variable(Instruction):
 
     def execute(self, wam):
         reg_idx, arg_idx = self.args
+        wam.ensure_stack(reg_idx)
+        wam.ensure_stack(arg_idx)
         wam.reg_stack[reg_idx] = wam.reg_stack[arg_idx]
 
 class get_value(Instruction):
@@ -270,6 +275,8 @@ class get_value(Instruction):
 
     def execute(self, wam):
         reg_idx, arg_idx = self.args
+        wam.ensure_stack(reg_idx)
+        wam.ensure_stack(arg_idx)
         reg_idx = wam.deref_reg(reg_idx)
         arg_idx = wam.deref_reg(arg_idx)
         wam.unify(reg_idx, arg_idx)
@@ -382,7 +389,10 @@ class WAM(object):
 
     def execute(self, instrs):
         for instr in instrs:
-            instr.execute(self)
+            try:
+                instr.execute(self)
+            except:
+                raise Exception('Exception while executing instruction: %s\nRegisters are: %s' % (instr, self.reg_stack))
 
     def load(self, functor, instrs):
         if functor is not None:
@@ -395,12 +405,48 @@ class WAM(object):
             self.execute([instr])
             self.p += 1
 
-class Compiler(object):
-    def allocate_registers(self, term, reg_allocation):
+class RegisterAllocation(object):
+    def __init__(self):
+        self.reg_allocation = {}
+        self.next_register = 1
+
+    def allocate_argument_registers(self, term):
+        """
+            Allocate registers for the arguments for this term.
+        """
+        if not isinstance(term, Compound):
+            return
+        for i, subterm in enumerate(term.subterms):
+            arg_idx = i + 1
+            if subterm in self.reg_allocation:
+                return
+            if not isinstance(subterm, Variable):
+                self.reg_allocation[subterm] = arg_idx
+        if self.next_register <= len(term.subterms):
+            self.next_register = len(term.subterms) + 1
+
+    def allocate_registers(self, term):
+        """
+            Allocate registers for a query or program term.
+
+            >>> r = RegisterAllocation()
+            >>> r.allocate_registers(Atom('a'))
+            >>> r.reg_allocation
+            {Atom('a'): 1}
+            >>> x = Variable()
+            >>> r.allocate_registers(x)
+            >>> r.reg_allocation[x]
+            2
+            >>> t = Compound('f', x)
+            >>> r.allocate_registers(t)
+            >>> r.reg_allocation[t]
+            3
+        """
         def get_reg(term):
-            if term not in reg_allocation:
-                reg_allocation[term] = len(reg_allocation) + 1
-            return reg_allocation[term]
+            if term not in self.reg_allocation:
+                self.reg_allocation[term] = self.next_register
+                self.next_register += 1
+            return self.reg_allocation[term]
 
         if isinstance(term, (list, tuple)):
             subterms = term
@@ -419,8 +465,12 @@ class Compiler(object):
         # Then other descendants
         for subterm in subterms:
             subterm = subterm.resolve()
-            self.allocate_registers(subterm, reg_allocation)
+            self.allocate_registers(subterm)
 
+    def __getitem__(self, item):
+        return self.reg_allocation[item]
+
+class Compiler(object):
     def compile_query(self, query, reg_allocation=None, vars_set=None, arg_idx=None):
         """
             >>> c = Compiler()
@@ -437,11 +487,11 @@ class Compiler(object):
         """
 
         if reg_allocation is None:
-            reg_allocation = {}
+            reg_allocation = RegisterAllocation()
 
         if vars_set is None:
             vars_set = set()
-            self.allocate_registers(query, reg_allocation)
+            reg_allocation.allocate_registers(query)
 
         query = query.resolve()
         if isinstance(query, Atom):
@@ -484,11 +534,13 @@ class Compiler(object):
             return [(call, query.get_functor())]
         elif isinstance(query, Compound):
             if reg_allocation is None:
-                reg_allocation = {}
+                reg_allocation = RegisterAllocation()
 
             if vars_set is None:
                 vars_set = set()
-                self.allocate_registers(query.subterms, reg_allocation)
+                reg_allocation.allocate_argument_registers(query)
+                for subterm in query.subterms:
+                    reg_allocation.allocate_registers(subterm)
 
             instrs = []
             for i, subterm in enumerate(query.subterms):
@@ -517,11 +569,11 @@ class Compiler(object):
         """
 
         if reg_allocation is None:
-            reg_allocation = {}
+            reg_allocation = RegisterAllocation()
 
         if vars_set is None:
             vars_set = set()
-            self.allocate_registers(program, reg_allocation)
+            reg_allocation.allocate_registers(program)
 
         program = program.resolve()
         if isinstance(program, Atom):
@@ -564,11 +616,13 @@ class Compiler(object):
             return [(proceed,)]
         elif isinstance(program, Compound):
             if reg_allocation is None:
-                reg_allocation = {}
+                reg_allocation = RegisterAllocation()
 
             if vars_set is None:
                 vars_set = set()
-                self.allocate_registers(program.subterms, reg_allocation)
+                reg_allocation.allocate_argument_registers(program)
+                for subterm in program.subterms:
+                    reg_allocation.allocate_registers(subterm)
 
             instrs = []
             for i, subterm in enumerate(program.subterms):
@@ -667,6 +721,8 @@ def print_heap(heap):
     print
 
 class WAMTest(unittest.TestCase):
+
+    # Figure 2.3: Compiled code for L_0 query ?- p(Z, h(Z, W), f(W)).
     fig_2_3_instrs = [
         put_structure(('h', 2), 3),   # ?- X3 = h
         set_variable(2),              #          (Z,
@@ -679,6 +735,7 @@ class WAMTest(unittest.TestCase):
         set_value(4)                  #                X4).
     ]
 
+    # Figure 2.4: Compiled code for L_0 program p(f(X), h(Y, f(a)), Y).
     fig_2_4_instrs = [
         get_structure(('p', 3), 1),   # X1 = p
         unify_variable(2),            #       (X2,
@@ -694,6 +751,7 @@ class WAMTest(unittest.TestCase):
         get_structure(('a', 0), 7)    # X7 = a.
     ]
 
+    # Figure 2.9: Argument registers for L_1 query ?- p(Z, h(Z, W), f(W)).
     fig_2_9_instrs = [
         put_variable(4, 1),           # ?- p(Z,
         put_structure(('h', 2), 2),   #        h
@@ -704,6 +762,21 @@ class WAMTest(unittest.TestCase):
         call(('p', 3))                #                   ).
     ]
 
+    # ?- p(f(X), h(Y, f(a)), Y).
+    ex9_query = [
+        put_structure(('f', 1), 1),
+        set_variable(4),
+        put_structure(('a', 0), 7),
+        put_structure(('f', 1), 6),
+        set_value(7),
+        put_structure(('h', 2), 2),
+        set_variable(5),
+        set_value(6),
+        put_value(5, 3),
+        call(('p', 3))
+    ]
+
+    # Figure 2.10: Argument registers for L_1 fact p(f(X), h(Y, f(a)), Y).
     fig_2_10_instrs = [
         get_structure(('f', 1), 1),   # p(f
         unify_variable(4),            #    (X),
@@ -714,7 +787,17 @@ class WAMTest(unittest.TestCase):
         get_structure(('f', 1), 6),   # X6 = f
         unify_variable(7),            #        (X7),
         get_structure(('a', 0), 7),   # X7 = a
-        proceed()                    # .
+        proceed()                     # .
+    ]
+
+    ex9_program = [
+        get_variable(4, 1),
+        get_structure(('h', 2), 2),
+        unify_value(4),
+        unify_variable(5),
+        get_structure(('f', 1), 3),
+        unify_value(5),
+        proceed()
     ]
 
     def test_fig_2_3(self):
@@ -871,13 +954,13 @@ class WAMTest(unittest.TestCase):
         X = Variable()
         Y = Variable()
         query = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
-        query_reg_allocation = {}
+        query_reg_allocation = RegisterAllocation()
         query_instrs = compiler.compile_query(query, query_reg_allocation)
 
         W = Variable()
         Z = Variable()
         program = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
-        program_reg_allocation = {}
+        program_reg_allocation = RegisterAllocation()
         program_instrs = compiler.compile_program(program, program_reg_allocation)
 
         wam = WAM()
@@ -946,13 +1029,13 @@ class WAMTest(unittest.TestCase):
         self.assertEqual(instrs, [
             put_structure(('f', 1), 1),
             set_variable(4),
-            put_structure(('a', 0), 6),
-            put_structure(('f', 1), 5),
-            set_value(6),
+            put_structure(('a', 0), 7),
+            put_structure(('f', 1), 6),
+            set_value(7),
             put_structure(('h', 2), 2),
-            set_variable(3),
-            set_value(5),
-            put_value(3, 3),
+            set_variable(5),
+            set_value(6),
+            put_value(5, 3),
             call(('p', 3))
         ])
 
@@ -961,12 +1044,12 @@ class WAMTest(unittest.TestCase):
         program = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
         instrs = compiler.compile_program_m1(program)
         self.assertEqual(instrs, [
-            get_variable(1, 1),
+            get_variable(4, 1),
             get_structure(('h', 2), 2),
-            unify_value(1),
-            unify_variable(4),
-            get_structure(('f', 1), 3),
             unify_value(4),
+            unify_variable(5),
+            get_structure(('f', 1), 3),
+            unify_value(5),
             proceed()
         ])
 
@@ -983,23 +1066,31 @@ class WAMTest(unittest.TestCase):
         X = Variable()
         Y = Variable()
         query = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
-        query_reg_allocation = {}
+        query_reg_allocation = RegisterAllocation()
         query_instrs = compiler.compile_query_m1(query, query_reg_allocation)
 
         W = Variable()
         Z = Variable()
         program = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
-        program_reg_allocation = {}
+        # Because there is a shared register space, we reuse the query's register allocation to
+        # force the program's registers into different slots.
+        program_reg_allocation = query_reg_allocation   # RegisterAllocation()
         program_instrs = compiler.compile_program_m1(program, program_reg_allocation)
 
         wam = WAM()
         wam.load(None, query_instrs)
         wam.load(program.get_functor(), program_instrs)
         wam.run()
+
         aW = wam.deref_reg(program_reg_allocation[W])
         aX = wam.deref_reg(query_reg_allocation[X])
         aY = wam.deref_reg(query_reg_allocation[Y])
         aZ = wam.deref_reg(program_reg_allocation[Z])
+
+        #print 'X reg:', query_reg_allocation.reg_allocation[X], 'X addr:', aX, 'X: ', wam.get_term_repr(aX)
+        #print 'Y reg:', query_reg_allocation.reg_allocation[Y], 'Y addr:', aY, 'Y: ', wam.get_term_repr(aY)
+        #print 'Z reg:', program_reg_allocation.reg_allocation[Z], 'Z addr:', aZ, 'Z: ', wam.get_term_repr(aZ)
+        #print 'W reg:', program_reg_allocation.reg_allocation[W], 'W addr:', aW, 'W: ', wam.get_term_repr(aW)
         self.assertEqual(wam.get_term_repr(aW), 'f(a)')
         self.assertEqual(wam.get_term_repr(aX), 'f(a)')
         self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
