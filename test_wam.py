@@ -2,7 +2,7 @@ import unittest
 
 from wam import *
 
-class WAMTest(unittest.TestCase):
+class M0Test(unittest.TestCase):
 
     # Figure 2.3: Compiled code for L_0 query ?- p(Z, h(Z, W), f(W)).
     fig_2_3_instrs = [
@@ -33,55 +33,6 @@ class WAMTest(unittest.TestCase):
         get_structure(('a', 0), 7)    # X7 = a.
     ]
 
-    # Figure 2.9: Argument registers for L_1 query ?- p(Z, h(Z, W), f(W)).
-    fig_2_9_instrs = [
-        put_variable(4, 1),           # ?- p(Z,
-        put_structure(('h', 2), 2),   #        h
-        set_value(4),                 #         (Z,
-        set_variable(5),              #            W),
-        put_structure(('f', 1), 3),   #               f
-        set_value(5),                 #                (W)
-        call(('p', 3))                #                   ).
-    ]
-
-    # ?- p(f(X), h(Y, f(a)), Y).
-    ex9_query = [
-        put_structure(('f', 1), 1),
-        set_variable(4),
-        put_structure(('a', 0), 7),
-        put_structure(('f', 1), 6),
-        set_value(7),
-        put_structure(('h', 2), 2),
-        set_variable(5),
-        set_value(6),
-        put_value(5, 3),
-        call(('p', 3))
-    ]
-
-    # Figure 2.10: Argument registers for L_1 fact p(f(X), h(Y, f(a)), Y).
-    fig_2_10_instrs = [
-        get_structure(('f', 1), 1),   # p(f
-        unify_variable(4),            #    (X),
-        get_structure(('h', 2), 2),   #        h
-        unify_variable(5),            #         (Y,
-        unify_variable(6),            #            X6),
-        get_value(5, 3),              #                Y),
-        get_structure(('f', 1), 6),   # X6 = f
-        unify_variable(7),            #        (X7),
-        get_structure(('a', 0), 7),   # X7 = a
-        proceed()                     # .
-    ]
-
-    ex9_program = [
-        get_variable(4, 1),
-        get_structure(('h', 2), 2),
-        unify_value(4),
-        unify_variable(5),
-        get_structure(('f', 1), 3),
-        unify_value(5),
-        proceed()
-    ]
-
     def test_fig_2_3(self):
         compiler = Compiler()
 
@@ -99,24 +50,6 @@ class WAMTest(unittest.TestCase):
         program = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
         instrs = compiler.compile_program(program)
         self.assertEqual(instrs, self.fig_2_4_instrs)
-
-    def test_fig_2_9(self):
-        compiler = Compiler()
-
-        Z = Variable()
-        W = Variable()
-        query = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
-        instrs = compiler.compile_query_m1(query)
-        self.assertEqual(instrs, self.fig_2_9_instrs)
-
-    def test_fig_2_10(self):
-        compiler = Compiler()
-
-        X = Variable()
-        Y = Variable()
-        program = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
-        instrs = compiler.compile_program_m1(program)
-        self.assertEqual(instrs, self.fig_2_10_instrs)
 
     def test_ex_2_1(self):
         """
@@ -256,6 +189,75 @@ class WAMTest(unittest.TestCase):
         self.assertEqual(wam.get_term_repr(aX), 'f(a)')
         self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
         self.assertEqual(wam.get_term_repr(aZ), 'f(f(a))')
+
+
+class M1Test(unittest.TestCase):
+    # Figure 2.9: Argument registers for L_1 query ?- p(Z, h(Z, W), f(W)).
+    fig_2_9_instrs = [
+        put_variable(4, 1),           # ?- p(Z,
+        put_structure(('h', 2), 2),   #        h
+        set_value(4),                 #         (Z,
+        set_variable(5),              #            W),
+        put_structure(('f', 1), 3),   #               f
+        set_value(5),                 #                (W)
+        call(('p', 3))                #                   ).
+    ]
+
+    # ?- p(f(X), h(Y, f(a)), Y).
+    ex9_query = [
+        put_structure(('f', 1), 1),
+        set_variable(4),
+        put_structure(('a', 0), 7),
+        put_structure(('f', 1), 6),
+        set_value(7),
+        put_structure(('h', 2), 2),
+        set_variable(5),
+        set_value(6),
+        put_value(5, 3),
+        call(('p', 3))
+    ]
+
+    # Figure 2.10: Argument registers for L_1 fact p(f(X), h(Y, f(a)), Y).
+    fig_2_10_instrs = [
+        get_structure(('f', 1), 1),   # p(f
+        unify_variable(4),            #    (X),
+        get_structure(('h', 2), 2),   #        h
+        unify_variable(5),            #         (Y,
+        unify_variable(6),            #            X6),
+        get_value(5, 3),              #                Y),
+        get_structure(('f', 1), 6),   # X6 = f
+        unify_variable(7),            #        (X7),
+        get_structure(('a', 0), 7),   # X7 = a
+        proceed()                     # .
+    ]
+
+    ex9_program = [
+        get_variable(4, 1),
+        get_structure(('h', 2), 2),
+        unify_value(4),
+        unify_variable(5),
+        get_structure(('f', 1), 3),
+        unify_value(5),
+        proceed()
+    ]
+
+    def test_fig_2_9(self):
+        compiler = Compiler()
+
+        Z = Variable()
+        W = Variable()
+        query = Compound('p', Z, Compound('h', Z, W), Compound('f', W))
+        instrs = compiler.compile_query_m1(query)
+        self.assertEqual(instrs, self.fig_2_9_instrs)
+
+    def test_fig_2_10(self):
+        compiler = Compiler()
+
+        X = Variable()
+        Y = Variable()
+        program = Compound('p', Compound('f', X), Compound('h', Y, Compound('f', Atom('a'))), Y)
+        instrs = compiler.compile_program_m1(program)
+        self.assertEqual(instrs, self.fig_2_10_instrs)
 
     def test_ex_2_6(self):
         """
