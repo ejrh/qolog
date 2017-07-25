@@ -25,6 +25,12 @@ class Instruction(object):
             return False
         return True
 
+    def __ne__(self, other):
+        return not self == other
+
+    def __hash__(self):
+        return hash((self.get_name(), self.get_args()))
+
     def __repr__(self):
         name = self.get_name()
         args_str = ', '.join(repr(x) for x in self.get_args())
