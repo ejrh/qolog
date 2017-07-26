@@ -127,7 +127,7 @@ class Parser(object):
                 v1 = value_stack.pop()
                 item = Compound(stack_oper, v1)
             else:
-                raise Exception('Unhandled operator type %s' % typ)
+                raise SyntaxError('Unhandled operator type %s' % typ)
             value_stack.append(item)
             #print>>sys.stderr, 'reduced using operator', stack_oper
 
@@ -164,10 +164,10 @@ class Parser(object):
         #print >>sys.stderr, operator_stack
 
         if operator_stack:
-            raise Exception('Unused operators: %s' % operator_stack)
+            raise SyntaxError('Unused operators: %s' % operator_stack)
 
         if len(value_stack) != 1:
-            raise Exception('Unreduced value stack: %s' % value_stack)
+            raise SyntaxError('Unreduced value stack: %s' % value_stack)
 
         return value_stack[0]
 
@@ -186,7 +186,7 @@ class Parser(object):
             term = self.parse_list()
             self.tokeniser.next()
         else:
-            raise Exception('Unhandled token %s' % repr(tok))
+            raise SyntaxError('Unhandled token %s' % repr(tok))
 
         return term
 
