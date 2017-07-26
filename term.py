@@ -194,3 +194,13 @@ def find_subgoals(term):
             subgoals.append(target)
     f(term)
     return subgoals
+
+def find_variables(term):
+    vars_set = set()
+    term = term.resolve()
+    if isinstance(term, Variable):
+        vars_set.add(term)
+    elif isinstance(term, Compound):
+        for st in term.subterms:
+            vars_set.update(find_variables(st))
+    return vars_set

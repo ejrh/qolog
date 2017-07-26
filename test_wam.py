@@ -1,5 +1,6 @@
 import unittest
 
+from term_parser import parse
 from wam import *
 
 class M0Test(unittest.TestCase):
@@ -360,6 +361,7 @@ class M1Test(unittest.TestCase):
         # force the program's registers into different slots.
         program_reg_allocation = query_reg_allocation   # RegisterAllocation()
         program_instrs = compiler.compile_program_m1(program, program_reg_allocation)
+        program_instrs = program_instrs[:-1]  # last instruction is proceed; remove it
 
         wam = WAM()
         wam.load(None, query_instrs)
@@ -379,3 +381,60 @@ class M1Test(unittest.TestCase):
         self.assertEqual(wam.get_term_repr(aX), 'f(a)')
         self.assertEqual(wam.get_term_repr(aY), 'f(f(a))')
         self.assertEqual(wam.get_term_repr(aZ), 'f(f(a))')
+
+
+class M2Test(unittest.TestCase):
+
+    # Figure 3.1: M_2 machine code for rule p(X, Y) :- q(X, Z), r(Z, Y).
+    fig_3_1_instrs = [
+        allocate(2),
+        get_variable(3, 1),
+        get_variable(1001, 2),
+        put_value(3, 1),
+        put_variable(1002, 2),
+        call(('q', 2)),
+        put_value(1002, 1),
+        put_value(1001, 2),
+        call(('r', 2)),
+        deallocate()
+    ]
+
+    def test_fig_3_1(self):
+        rule, scope = parse(PROLOG_OPS, 'p(X, Y) :- q(X, Z), r(Z, Y)')
+
+        head, body = rule.subterms
+        subgoals = find_subgoals(body)
+
+        compiler = Compiler()
+        instrs = compiler.compile_rule(head, subgoals)
+
+        self.assertEqual(self.fig_3_1_instrs, instrs)
+
+    def test_ex_3_1(self):
+        """
+            Exercise 3.1
+
+            Give M_2 code for L_2 facts q(a, b) and r(b, c) and L_2 query ?- p(U, V), then trace
+            the code shown in Figure 3.1 and verify that the solution produced is U = a, V = c.
+        """
+        fact1, fact2, query, scope = parse(PROLOG_OPS, 'q(a, b)', 'r(b, c)', 'p(U, V)')
+
+        compiler = Compiler()
+        fact1_instrs = compiler.compile_rule(fact1, [])
+        fact2_instrs = compiler.compile_rule(fact2, [])
+        reg_allocation = RegisterAllocation()
+        query_instrs = compiler.compile_query_m1(query, reg_allocation)
+
+        wam = WAM()
+        wam.load(('p', 2), self.fig_3_1_instrs)
+        wam.load(('q', 2), fact1_instrs)
+        wam.load(('r', 2), fact2_instrs)
+        query_offset = wam.load(None, query_instrs)
+        wam.p = query_offset
+
+        wam.run()
+
+        aU = wam.deref_reg(reg_allocation[scope.var('U')])
+        self.assertEqual(wam.get_term_repr(aU), 'a')
+        aV = wam.deref_reg(reg_allocation[scope.var('V')])
+        self.assertEqual(wam.get_term_repr(aV), 'c')

@@ -14,6 +14,14 @@ def enums(s):
 REF, STR = enums('REF STR')
 READ, WRITE = enums('READ WRITE')
 
+#TODO - find a better way to segregate permanent and temporary registers!
+PERMANENT_REGISTER_BASE = 1000
+
+PROLOG_OPS = {
+    ':-': (1200, 'xfx'),
+    ',': (1000, 'xfy')
+}
+
 class Instruction(object):
     def __init__(self, *args):
         self.args = args
@@ -61,7 +69,7 @@ class put_structure(Instruction):
         wam.heap.append((STR, h + 1))
         wam.heap.append(functor)
         wam.ensure_stack(reg_idx)
-        wam.reg_stack[reg_idx] = (REF, h)  # wam.heap[h]
+        wam.set_reg(reg_idx, (REF, h))
 
 class set_variable(Instruction):
     """
@@ -81,7 +89,7 @@ class set_variable(Instruction):
         h = len(wam.heap)
         wam.heap.append((REF, h))
         wam.ensure_stack(reg_idx)
-        wam.reg_stack[reg_idx] = wam.heap[h]
+        wam.set_reg(reg_idx, wam.heap[h])
 
 class set_value(Instruction):
     """
@@ -97,7 +105,7 @@ class set_value(Instruction):
     def execute(self, wam):
         reg_idx, = self.args
         wam.ensure_stack(reg_idx)
-        wam.heap.append(wam.reg_stack[reg_idx])
+        wam.heap.append(wam.get_reg(reg_idx))
 
 class get_structure(Instruction):
     """
@@ -129,7 +137,7 @@ class get_structure(Instruction):
         if idx is not None:
             a, b = wam.heap[idx]
         else:
-            a, b = wam.reg_stack[reg_idx]
+            a, b = wam.get_reg(reg_idx)
         if a is REF:
             h = len(wam.heap)
             wam.heap.append((STR, h+1))
@@ -177,11 +185,11 @@ class unify_variable(Instruction):
         reg_idx, = self.args
         wam.ensure_stack(reg_idx)
         if wam.mode == READ:
-            wam.reg_stack[reg_idx] = (REF, wam.next_subterm) #self.heap[self.next_subterm]
+            wam.set_reg(reg_idx, (REF, wam.next_subterm))
         elif wam.mode == WRITE:
             h = len(wam.heap)
             wam.heap.append((REF, h))
-            wam.reg_stack[reg_idx] = wam.heap[h]
+            wam.set_reg(reg_idx, wam.heap[h])
         else:
             raise Exception('Mode not set!')
         wam.next_subterm += 1
@@ -221,7 +229,7 @@ class unify_value(Instruction):
             wam.unify(idx, wam.next_subterm)
         elif wam.mode == WRITE:
             h = len(wam.heap)
-            wam.heap.append(wam.reg_stack[reg_idx])
+            wam.heap.append(wam.get_reg(reg_idx))
         else:
             raise Exception('Mode not set!')
         wam.next_subterm += 1
@@ -229,12 +237,15 @@ class unify_value(Instruction):
 class call(Instruction):
     def execute(self, wam):
         functor, = self.args
+        wam.cp = wam.p + 1
         wam.p = wam.labels[functor] - 1  # -1 because p will be incremented after this instruction
         #wam.reg_stack = wam.reg_stack[:functor[1]+1]
 
 class proceed(Instruction):
     def execute(self, wam):
-        pass
+        if wam.cp is not None:
+            wam.p = wam.cp - 1
+        wam.cp = None
 
 class put_variable(Instruction):
     """
@@ -248,8 +259,8 @@ class put_variable(Instruction):
         wam.ensure_stack(arg_idx)
         h = len(wam.heap)
         wam.heap.append((REF, h))
-        wam.reg_stack[reg_idx] = wam.heap[h]
-        wam.reg_stack[arg_idx] = wam.heap[h]
+        wam.set_reg(reg_idx, wam.heap[h])
+        wam.set_reg(arg_idx, wam.heap[h])
 
 class put_value(Instruction):
     """
@@ -260,7 +271,7 @@ class put_value(Instruction):
         reg_idx, arg_idx = self.args
         wam.ensure_stack(reg_idx)
         wam.ensure_stack(arg_idx)
-        wam.reg_stack[arg_idx] = wam.reg_stack[reg_idx]
+        wam.set_reg(arg_idx, wam.get_reg(reg_idx))
 
 class get_variable(Instruction):
     """
@@ -271,7 +282,7 @@ class get_variable(Instruction):
         reg_idx, arg_idx = self.args
         wam.ensure_stack(reg_idx)
         wam.ensure_stack(arg_idx)
-        wam.reg_stack[reg_idx] = wam.reg_stack[arg_idx]
+        wam.set_reg(reg_idx, wam.get_reg(arg_idx))
 
 class get_value(Instruction):
     """
@@ -286,6 +297,22 @@ class get_value(Instruction):
         arg_idx = wam.deref_reg(arg_idx)
         wam.unify(reg_idx, arg_idx)
 
+class allocate(Instruction):
+    def execute(self, wam):
+        size, = self.args
+        wam.frame = Frame(wam.frame, wam.cp, size)
+
+class deallocate(Instruction):
+    def execute(self, wam):
+        wam.p = wam.frame.cp - 1
+        wam.frame = wam.frame.parent
+
+class Frame(object):
+    def __init__(self, parent=None, cp=None, size=0):
+        self.parent = parent
+        self.cp = cp
+        self.reg_stack = [None] * (size+1)
+
 class WAM(object):
     def __init__(self):
         self.heap = []
@@ -294,12 +321,29 @@ class WAM(object):
         self.next_subterm = None
         self.code = []
         self.p = 0
+        self.cp = None
         self.labels = {}
+        self.frame = Frame(0)
 
     def ensure_stack(self, idx):
-        if len(self.reg_stack) <= idx:
-            extra = idx - len(self.reg_stack) + 1
-            self.reg_stack.extend((None, None) for i in range(extra))
+        if idx < PERMANENT_REGISTER_BASE:
+            if len(self.reg_stack) <= idx:
+                extra = idx - len(self.reg_stack) + 1
+                self.reg_stack.extend((None, None) for i in range(extra))
+
+    def set_reg(self, idx, value):
+        if idx < PERMANENT_REGISTER_BASE:
+            self.ensure_stack(idx)
+            self.reg_stack[idx] = value
+        else:
+            self.frame.reg_stack[idx - PERMANENT_REGISTER_BASE] = value
+
+    def get_reg(self, idx):
+        if idx < PERMANENT_REGISTER_BASE:
+            self.ensure_stack(idx)
+            return self.reg_stack[idx]
+        else:
+            return self.frame.reg_stack[idx - PERMANENT_REGISTER_BASE]
 
     def deref(self, idx):
         a, b = self.heap[idx]
@@ -309,7 +353,7 @@ class WAM(object):
         return idx
 
     def deref_reg(self, reg_idx):
-        a, b = self.reg_stack[reg_idx]
+        a, b = self.get_reg(reg_idx)
         if a is REF:
             return self.deref(b)
         return None
@@ -396,17 +440,20 @@ class WAM(object):
         for instr in instrs:
             try:
                 instr.execute(self)
-            except:
-                raise Exception('Exception while executing instruction: %s\nRegisters are: %s' % (instr, self.reg_stack))
+            except Exception, ex:
+                raise Exception('Exception while executing instruction: %s\nRegisters are: %s\nFrame is: %s\n%s' % (instr, self.reg_stack, self.frame.reg_stack, ex))
 
     def load(self, functor, instrs):
+        start = len(self.code)
         if functor is not None:
-            self.labels[functor] = len(self.code)
+            self.labels[functor] = start
         self.code.extend(instrs)
+        return start
 
     def run(self):
         while self.p < len(self.code):
             instr = self.code[self.p]
+            #print '*', self.p, instr
             self.execute([instr])
             self.p += 1
 
@@ -414,6 +461,9 @@ class RegisterAllocation(object):
     def __init__(self):
         self.reg_allocation = {}
         self.next_register = 1
+        self.permanent_allocation = {}
+        self.next_permanent_register = 1
+        self.permanent_variables = set()
 
     def allocate_argument_registers(self, term):
         """
@@ -447,17 +497,18 @@ class RegisterAllocation(object):
             >>> r.reg_allocation[t]
             3
         """
-        def get_reg(term):
-            if term not in self.reg_allocation:
-                self.reg_allocation[term] = self.next_register
-                self.next_register += 1
-            return self.reg_allocation[term]
+        def ensure_allocated(term):
+            if term not in self.reg_allocation and term not in self.permanent_allocation:
+                if term in self.permanent_variables:
+                    self.allocate_permanent_register(term)
+                else:
+                    self.allocate_register(term)
 
         if isinstance(term, (list, tuple)):
             subterms = term
         else:
             term = term.resolve()
-            get_reg(term)
+            ensure_allocated(term)
             if isinstance(term, Compound):
                 subterms = term.subterms
             else:
@@ -465,15 +516,56 @@ class RegisterAllocation(object):
 
         # Immediate children are allocated registers
         for subterm in subterms:
-            get_reg(subterm.resolve())
+            ensure_allocated(subterm.resolve())
 
         # Then other descendants
         for subterm in subterms:
             subterm = subterm.resolve()
             self.allocate_registers(subterm)
 
+    def find_permanent_variables(self, head, subgoals, threshold=2):
+        if len(subgoals) < 1:
+            return
+        # The head atom is considered to be part of the first body goal.
+        subsets = []
+        if head is not None:
+            subsets.append(Compound(':-', head, subgoals[0]))
+        else:
+            subsets.append(subgoals[0])
+        for i in range(1, len(subgoals)):
+            subsets.append(subgoals[i])
+
+        # Count how many subsets each variable appears in.
+        var_counts = {}
+        for subset in subsets:
+            for v in find_variables(subset):
+                if v in var_counts:
+                    var_counts[v] += 1
+                else:
+                    var_counts[v] = 1
+
+        # All those variables that appeared in more than one subterm are permanent
+        for var, count in var_counts.items():
+            if count >= threshold:
+                self.permanent_variables.add(var)
+
+    def allocate_register(self, term):
+        assert term not in self.reg_allocation
+        assert term not in self.permanent_allocation
+        self.reg_allocation[term] = self.next_register
+        self.next_register += 1
+
+    def allocate_permanent_register(self, term):
+        assert term not in self.reg_allocation
+        assert term not in self.permanent_allocation
+        self.permanent_allocation[term] = self.next_permanent_register
+        self.next_permanent_register += 1
+
     def __getitem__(self, item):
-        return self.reg_allocation[item]
+        if item in self.reg_allocation:
+            return self.reg_allocation[item]
+        else:
+            return PERMANENT_REGISTER_BASE + self.permanent_allocation[item]
 
 class Compiler(object):
     def compile_query(self, query, reg_allocation=None, vars_set=None, arg_idx=None):
@@ -543,9 +635,10 @@ class Compiler(object):
 
             if vars_set is None:
                 vars_set = set()
-                reg_allocation.allocate_argument_registers(query)
-                for subterm in query.subterms:
-                    reg_allocation.allocate_registers(subterm)
+
+            reg_allocation.allocate_argument_registers(query)
+            for subterm in query.subterms:
+                reg_allocation.allocate_registers(subterm)
 
             instrs = []
             for i, subterm in enumerate(query.subterms):
@@ -557,6 +650,16 @@ class Compiler(object):
             return instrs
         elif isinstance(query, Variable):
             raise Exception("Can't compile query for variable")
+
+    def compile_query_m2(self, query, reg_allocation=None):
+        # A query must put all its variables in permanent registers, so their values can be recovered
+        subgoals = find_subgoals(query)
+        reg_allocation.find_permanent_variables(None, subgoals, threshold=1)
+        vars_set = set()
+        instrs = []
+        for sg in subgoals:
+            instrs.extend(self.compile_query_m1(sg, reg_allocation, vars_set))
+        return instrs
 
     def compile_program(self, program, reg_allocation=None, vars_set=None, arg_idx=None):
         """
@@ -625,9 +728,10 @@ class Compiler(object):
 
             if vars_set is None:
                 vars_set = set()
-                reg_allocation.allocate_argument_registers(program)
-                for subterm in program.subterms:
-                    reg_allocation.allocate_registers(subterm)
+
+            reg_allocation.allocate_argument_registers(program)
+            for subterm in program.subterms:
+                reg_allocation.allocate_registers(subterm)
 
             instrs = []
             for i, subterm in enumerate(program.subterms):
@@ -639,6 +743,35 @@ class Compiler(object):
             return instrs
         elif isinstance(program, Variable):
             raise Exception("Can't compile program for variable")
+
+    def allocate_rule_registers(self, head, subgoals, reg_allocation):
+        reg_allocation.find_permanent_variables(head, subgoals)
+
+        reg_allocation.allocate_argument_registers(head)
+        for sg in subgoals:
+            reg_allocation.allocate_argument_registers(sg)
+
+        reg_allocation.allocate_registers(head.subterms)
+        for sg in subgoals:
+            reg_allocation.allocate_registers(sg.subterms)
+        return reg_allocation
+
+    def compile_rule(self, head, subgoals, reg_allocation=None):
+        if reg_allocation is None:
+            reg_allocation = RegisterAllocation()
+        reg_allocation = self.allocate_rule_registers(head, subgoals, reg_allocation)
+        vars_set = set()
+        instrs = []
+        if len(subgoals) > 0:
+            instrs.append(allocate(len(reg_allocation.permanent_allocation)))
+        instrs.extend(self.compile_program_m1(head, reg_allocation, vars_set)[:-1])  # Remove trailing proceed instruction
+        for sg in subgoals:
+            instrs.extend(self.compile_query_m1(sg, reg_allocation, vars_set))
+        if len(subgoals) > 0:
+            instrs.append(deallocate())
+        else:
+            instrs.append(proceed())
+        return instrs
 
     def write_to_heap(self, term, wam, var_idxes=None):
         """
@@ -729,44 +862,57 @@ def main():
     from term_parser import parse, unparse
 
     try:
-        query_str = sys.argv[1]
-        program_str = sys.argv[2]
-        query, query_scope = parse({}, query_str)
-        program, program_scope = parse({}, program_str)
-    except:
-        print 'Please enter a query and a program (with quotes around each if necessary)'
-        print 'E.g.   wam.py   "p(Z, h(Z, W), f(W))"   "p(f(X), h(Y, f(a)), Y)"'
+        if len(sys.argv) < 2:
+            raise IndexError
+        program_strs = sys.argv[1:-1]
+        query_str = sys.argv[-1]
+        programs_and_scopes = [parse(PROLOG_OPS, x) for x in program_strs]
+        query, query_scope = parse(PROLOG_OPS, query_str)
+    except SyntaxError, ex:
+        print ex
+        sys.exit(1)
+    except IndexError:
+        print 'Please enter a program (one or more rules) and a query'
+        print '(you will probably need quotes around each item)'
+        print 'E.g.   wam.py   "p(X, Y) :- q(X, Z), r(Z, Y)" "q(a, b)" "r(b, c)" "p(U, V)"'
         sys.exit(1)
 
-    print 'Running query:    %s' % unparse({}, query, query_scope)
-    print 'Against program:  %s' % unparse({}, program, program_scope)
+    print 'Running query:    %s' % unparse(PROLOG_OPS, query, query_scope)
+    print 'Against program:'
+    for ps in programs_and_scopes:
+        print '    %s' % unparse(PROLOG_OPS, *ps)
 
     compiler = Compiler()
     wam = WAM()
 
     print
-    print 'Compiled query to:'
-    query_reg_map = {}
-    query_instrs = compiler.compile_query_m1(query, query_reg_map)
-    print_instrs(query_instrs)
-    print 'Register allocations are: ', ', '.join('%s: %s' % (n, query_reg_map[v]) for n,v in query_scope.names_to_vars.items())
+    print 'Compiled program to:'
+    for p,_ in programs_and_scopes:
+        if p.get_functor() == (':-', 2):
+            head = p.subterms[0]
+            subgoals = find_subgoals(p.subterms[1])
+        else:
+            head = p
+            subgoals = []
+        program_instrs = compiler.compile_rule(head, subgoals)
+        wam.load(head.get_functor(), program_instrs)
+        print '%s:' % (head.get_functor(),)
+        print_instrs(program_instrs)
 
     print
-    print 'Compiled program to:'
-    program_reg_map = {}
-    program_instrs = compiler.compile_program_m1(program, program_reg_map)
-    print_instrs(program_instrs)
-    print 'Register allocations are: ', ', '.join('%s: %s' % (n, program_reg_map[v]) for n,v in program_scope.names_to_vars.items())
+    print 'Compiled query to:'
+    query_reg_allocation = RegisterAllocation()
+    query_instrs = compiler.compile_query_m2(query, reg_allocation=query_reg_allocation)
+    print_instrs(query_instrs)
+    print 'Register allocations are: ', ', '.join('%s: %s' % (n, query_reg_allocation[v]) for n,v in query_scope.names_to_vars.items())
 
     print
     print 'Running query and program...'
-    wam.load(None, query_instrs)
-    wam.load(program.get_functor(), program_instrs)
+    wam.p = wam.load(None, query_instrs)
+    wam.frame = Frame(size=len(query_reg_allocation.permanent_allocation)+1)
     wam.run()
     for n, v in query_scope.names_to_vars.items():
-        print '%s = %s' % (n, wam.get_term_repr(wam.deref_reg(query_reg_map[v])))
-    for n, v in program_scope.names_to_vars.items():
-        print '%s = %s' % (n, wam.get_term_repr(wam.deref_reg(program_reg_map[v])))
+        print '%s = %s' % (n, wam.get_term_repr(wam.deref_reg(query_reg_allocation[v])))
 
     print
     print 'Final WAM state:'
