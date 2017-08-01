@@ -300,16 +300,20 @@ class get_value(Instruction):
 class allocate(Instruction):
     def execute(self, wam):
         size, = self.args
-        wam.frame = Frame(wam.frame, wam.cp, size)
+        wam.push_frame(EnvironmentFrame(wam.e, wam.cp, size))
 
 class deallocate(Instruction):
     def execute(self, wam):
-        wam.p = wam.frame.cp - 1
-        wam.frame = wam.frame.parent
+        wam.p = wam.stack[wam.e].cp - 1
+        wam.pop_frame()
 
 class Frame(object):
-    def __init__(self, parent=None, cp=None, size=0):
-        self.parent = parent
+    def __init__(self):
+        self.position = None
+
+class EnvironmentFrame(Frame):
+    def __init__(self, ce, cp, size):
+        self.ce = ce
         self.cp = cp
         self.reg_stack = [None] * (size+1)
 
@@ -323,7 +327,20 @@ class WAM(object):
         self.p = 0
         self.cp = None
         self.labels = {}
-        self.frame = Frame(0)
+        self.stack = []
+        self.e = None
+
+    def push_frame(self, frame):
+        frame.position = len(self.stack)
+        self.stack.append(frame)
+        if isinstance(frame, EnvironmentFrame):
+            self.e = len(self.stack) - 1
+
+    def pop_frame(self):
+        frame = self.stack[-1]
+        self.stack = self.stack[:-1]
+        if isinstance(frame, EnvironmentFrame):
+            self.e = frame.ce
 
     def ensure_stack(self, idx):
         if idx < PERMANENT_REGISTER_BASE:
@@ -336,14 +353,14 @@ class WAM(object):
             self.ensure_stack(idx)
             self.reg_stack[idx] = value
         else:
-            self.frame.reg_stack[idx - PERMANENT_REGISTER_BASE] = value
+            self.stack[self.e].reg_stack[idx - PERMANENT_REGISTER_BASE] = value
 
     def get_reg(self, idx):
         if idx < PERMANENT_REGISTER_BASE:
             self.ensure_stack(idx)
             return self.reg_stack[idx]
         else:
-            return self.frame.reg_stack[idx - PERMANENT_REGISTER_BASE]
+            return self.stack[self.e].reg_stack[idx - PERMANENT_REGISTER_BASE]
 
     def deref(self, idx):
         a, b = self.heap[idx]
@@ -438,10 +455,10 @@ class WAM(object):
 
     def execute(self, instrs):
         for instr in instrs:
-            try:
+            #try:
                 instr.execute(self)
-            except Exception, ex:
-                raise Exception('Exception while executing instruction: %s\nRegisters are: %s\nFrame is: %s\n%s' % (instr, self.reg_stack, self.frame.reg_stack, ex))
+            #except Exception, ex:
+            #    raise Exception('Exception while executing instruction: %s\nRegisters are: %s\nFrame is: %s\n%s' % (instr, self.reg_stack, self.stack[self.e].reg_stack, ex))
 
     def load(self, functor, instrs):
         start = len(self.code)
@@ -453,7 +470,7 @@ class WAM(object):
     def run(self):
         while self.p < len(self.code):
             instr = self.code[self.p]
-            #print '*', self.p, instr
+            print '*', self.p, instr
             self.execute([instr])
             self.p += 1
 
@@ -909,7 +926,7 @@ def main():
     print
     print 'Running query and program...'
     wam.p = wam.load(None, query_instrs)
-    wam.frame = Frame(size=len(query_reg_allocation.permanent_allocation)+1)
+    wam.push_frame(EnvironmentFrame(None, None, size=len(query_reg_allocation.permanent_allocation)))
     wam.run()
     for n, v in query_scope.names_to_vars.items():
         print '%s = %s' % (n, wam.get_term_repr(wam.deref_reg(query_reg_allocation[v])))
