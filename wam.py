@@ -50,6 +50,10 @@ class Instruction(object):
     def get_args(self):
         return self.args
 
+    def execute(self, wam):
+        f = getattr(self, self.__class__.__name__)
+        f(wam, *self.args)
+
 class put_structure(Instruction):
     """
         Push a new STR (and adjoining functor) cell onto the heap and copy that cell into the
@@ -63,8 +67,7 @@ class put_structure(Instruction):
         [(REF, 0)]
     """
 
-    def execute(self, wam):
-        functor, reg_idx = self.args
+    def put_structure(self, wam, functor, reg_idx):
         h = len(wam.heap)
         wam.heap.append((STR, h + 1))
         wam.heap.append(functor)
@@ -84,8 +87,7 @@ class set_variable(Instruction):
         [(REF, 0)]
     """
 
-    def execute(self, wam):
-        reg_idx, = self.args
+    def set_variable(self, wam, reg_idx):
         h = len(wam.heap)
         wam.heap.append((REF, h))
         wam.ensure_stack(reg_idx)
@@ -102,8 +104,7 @@ class set_value(Instruction):
         [(REF, 0)]
     """
 
-    def execute(self, wam):
-        reg_idx, = self.args
+    def set_value(self, wam, reg_idx):
         wam.ensure_stack(reg_idx)
         wam.heap.append(wam.get_reg(reg_idx))
 
@@ -129,8 +130,7 @@ class get_structure(Instruction):
         2
     """
 
-    def execute(self, wam):
-        functor, reg_idx = self.args
+    def get_structure(self, wam, functor, reg_idx):
         wam.next_subterm = 1
         wam.ensure_stack(reg_idx)
         idx = wam.deref_reg(reg_idx)
@@ -181,8 +181,7 @@ class unify_variable(Instruction):
         1
     """
 
-    def execute(self, wam):
-        reg_idx, = self.args
+    def unify_variable(self, wam, reg_idx):
         wam.ensure_stack(reg_idx)
         if wam.mode == READ:
             wam.set_reg(reg_idx, (REF, wam.next_subterm))
@@ -220,8 +219,7 @@ class unify_value(Instruction):
         1
     """
 
-    def execute(self, wam):
-        reg_idx, = self.args
+    def unify_value(self, wam, reg_idx):
         wam.ensure_stack(reg_idx)
         if wam.mode == READ:
             idx = wam.deref_reg(reg_idx)
@@ -235,14 +233,13 @@ class unify_value(Instruction):
         wam.next_subterm += 1
 
 class call(Instruction):
-    def execute(self, wam):
-        functor, = self.args
+    def call(self, wam, functor):
         wam.cp = wam.p + 1
         wam.p = wam.labels[functor] - 1  # -1 because p will be incremented after this instruction
         #wam.reg_stack = wam.reg_stack[:functor[1]+1]
 
 class proceed(Instruction):
-    def execute(self, wam):
+    def proceed(self, wam):
         if wam.cp is not None:
             wam.p = wam.cp - 1
         wam.cp = None
@@ -253,8 +250,7 @@ class put_variable(Instruction):
         well as an argument register.
     """
 
-    def execute(self, wam):
-        reg_idx, arg_idx = self.args
+    def put_variable(self, wam, reg_idx, arg_idx):
         wam.ensure_stack(reg_idx)
         wam.ensure_stack(arg_idx)
         h = len(wam.heap)
@@ -267,8 +263,7 @@ class put_value(Instruction):
         Copy a register into an argument register.
     """
 
-    def execute(self, wam):
-        reg_idx, arg_idx = self.args
+    def put_value(self, wam, reg_idx, arg_idx):
         wam.ensure_stack(reg_idx)
         wam.ensure_stack(arg_idx)
         wam.set_reg(arg_idx, wam.get_reg(reg_idx))
@@ -278,8 +273,7 @@ class get_variable(Instruction):
         Copy an argument register into another register.
     """
 
-    def execute(self, wam):
-        reg_idx, arg_idx = self.args
+    def get_variable(self, wam, reg_idx, arg_idx):
         wam.ensure_stack(reg_idx)
         wam.ensure_stack(arg_idx)
         wam.set_reg(reg_idx, wam.get_reg(arg_idx))
@@ -289,8 +283,7 @@ class get_value(Instruction):
         Unify a register with an argument register.
     """
 
-    def execute(self, wam):
-        reg_idx, arg_idx = self.args
+    def get_value(self, wam, reg_idx, arg_idx):
         wam.ensure_stack(reg_idx)
         wam.ensure_stack(arg_idx)
         reg_idx = wam.deref_reg(reg_idx)
@@ -298,12 +291,11 @@ class get_value(Instruction):
         wam.unify(reg_idx, arg_idx)
 
 class allocate(Instruction):
-    def execute(self, wam):
-        size, = self.args
+    def allocate(self, wam, size):
         wam.push_frame(EnvironmentFrame(wam.e, wam.cp, size))
 
 class deallocate(Instruction):
-    def execute(self, wam):
+    def deallocate(self, wam):
         wam.p = wam.stack[wam.e].cp - 1
         wam.pop_frame()
 
