@@ -204,3 +204,15 @@ def find_variables(term):
         for st in term.subterms:
             vars_set.update(find_variables(st))
     return vars_set
+
+def get_head(term):
+    if term.is_functor(':-', 2):
+        return term.subterms[0]
+    else:
+        return term
+
+def get_body_subgoals(term):
+    if term.is_functor(':-', 2):
+        return find_subgoals(term.subterms[1])
+    else:
+        return []

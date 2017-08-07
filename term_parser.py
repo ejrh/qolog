@@ -2,7 +2,7 @@ import string
 
 from term import *
 
-__all__ = ['parse', 'unparse']
+__all__ = ['parse', 'unparse', 'format_functor']
 
 ATOM_CHARS = string.ascii_lowercase + '\''
 WORD_CHARS = string.letters + string.digits + '_'
@@ -363,3 +363,19 @@ def unparse_recurse(operators, term, scope, printing, recursing_on):
     rv = unparse(operators, term, scope, printing)
     printing.remove(recursing_on)
     return rv
+
+def format_functor(name, arity=None):
+    """
+        >>> format_functor('a/2')
+        'a/2'
+        >>> format_functor('a', 2)
+        'a/2'
+        >>> format_functor(('a', 2))
+        'a/2'
+    """
+    if arity is not None:
+        return '%s/%d' % (name, arity)
+    elif type(name) is str:
+        return name
+    else:
+        return '%s/%d' % name

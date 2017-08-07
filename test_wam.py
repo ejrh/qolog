@@ -438,3 +438,61 @@ class M2Test(unittest.TestCase):
         self.assertEqual(wam.get_term_repr(aU), 'a')
         aV = wam.deref_reg(reg_allocation[scope.var('V')])
         self.assertEqual(wam.get_term_repr(aV), 'c')
+
+
+class M3Test(unittest.TestCase):
+
+    # Figure 4.4: M_3 code for a multiple clause definition
+    # p(X, a).
+    # p(b, X).
+    # p(X, Y) :- p(X, a), p(b, Y).
+    fig_4_4_instrs = [
+        label('p/2'),
+        try_me_else('L1'),            # p
+        get_variable(3, 1),           #  (X,
+        get_structure(('a', 0), 2),   #     a)
+        proceed(),                    #       .
+        label('L1'),
+        retry_me_else('L2'),          # p
+        get_structure(('b', 0), 1),   #  (b,
+        get_variable(3, 2),           #     X)
+        proceed(),                    #       .
+        label('L2'),
+        trust_me(),
+        allocate(1),                  # p
+        get_variable(3, 1),           #  (X,
+        get_variable(1001, 2),        #     Y) :-
+        put_value(3, 1),              #           p(X,
+        put_structure(('a', 0), 2),   #               a
+        call(('p', 2)),               #                ),
+        put_structure(('b', 0), 1),   #           p(b,
+        put_value(1001, 2),           #               Y
+        call(('p', 2)),               #                )
+        deallocate()                  #                 .
+    ]
+
+    def test_fig_4_4(self):
+        rules_and_scopes = [parse(PROLOG_OPS, x) for x in ('p(X, a)', 'p(b, X)', 'p(X, Y) :- p(X, a), p(b, Y)')]
+
+        compiler = Compiler()
+        instrs = compiler.compile_predicate([x[0] for x in rules_and_scopes])
+
+        self.assertEqual(self.fig_4_4_instrs, instrs)
+
+    def test_ex_4_1(self):
+        """
+            Exercise 4.1
+
+            Trace the execution of L_3 query ?- p(c, d) with code in Figure 4.4, giving all the
+            successive states of the stack, the heap, and the trail.
+        """
+        compiler = Compiler()
+        query, query_scope = parse(PROLOG_OPS, 'p(c, d)')
+        query_reg_allocation = RegisterAllocation()
+        query_instrs = compiler.compile_query_m2(query, query_reg_allocation)
+
+        wam = WAM()
+        wam.load(('p', 2), self.fig_4_4_instrs)
+        wam.p = wam.load(None, query_instrs)
+        wam.push_frame(EnvironmentFrame(None, None, size=len(query_reg_allocation.permanent_allocation)))
+        wam.run()

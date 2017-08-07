@@ -1,6 +1,7 @@
 import sys
 
 from term import *
+from term_parser import *
 
 class Enum(object):
     def __init__(self, name):
@@ -68,9 +69,7 @@ class put_structure(Instruction):
     """
 
     def put_structure(self, wam, functor, reg_idx):
-        h = len(wam.heap)
-        wam.heap.append((STR, h + 1))
-        wam.heap.append(functor)
+        h = wam.add_to_heap((STR, ), functor)
         wam.ensure_stack(reg_idx)
         wam.set_reg(reg_idx, (REF, h))
 
@@ -88,8 +87,7 @@ class set_variable(Instruction):
     """
 
     def set_variable(self, wam, reg_idx):
-        h = len(wam.heap)
-        wam.heap.append((REF, h))
+        h = wam.add_to_heap((REF,))
         wam.ensure_stack(reg_idx)
         wam.set_reg(reg_idx, wam.heap[h])
 
@@ -106,7 +104,7 @@ class set_value(Instruction):
 
     def set_value(self, wam, reg_idx):
         wam.ensure_stack(reg_idx)
-        wam.heap.append(wam.get_reg(reg_idx))
+        wam.add_to_heap(wam.get_reg(reg_idx))
 
 class get_structure(Instruction):
     """
@@ -139,21 +137,15 @@ class get_structure(Instruction):
         else:
             a, b = wam.get_reg(reg_idx)
         if a is REF:
-            h = len(wam.heap)
-            wam.heap.append((STR, h+1))
-            wam.heap.append(functor)
+            h = wam.add_to_heap((STR,), functor)
             wam.bind(idx, h)
             wam.mode = WRITE
         elif a is STR and wam.heap[b] == functor:
             wam.next_subterm = b + 1
             wam.mode = READ
         else:
-            if a is STR:
-                raise Exception('Functor %s does not match %s' % (wam.heap[b], functor))
-            elif type(a) is str:
-                raise Exception('Register %d points to functor cell!' % reg_idx)
-            else:
-                raise Exception('Register %d has invalid contents!' % reg_idx)
+            assert a is REF or a is STR, 'Cell pointed to by register %d was %s' % (reg_idx, (a, b))
+            wam.backtrack()
 
 class unify_variable(Instruction):
     """
@@ -186,8 +178,7 @@ class unify_variable(Instruction):
         if wam.mode == READ:
             wam.set_reg(reg_idx, (REF, wam.next_subterm))
         elif wam.mode == WRITE:
-            h = len(wam.heap)
-            wam.heap.append((REF, h))
+            h = wam.add_to_heap((REF, ))
             wam.set_reg(reg_idx, wam.heap[h])
         else:
             raise Exception('Mode not set!')
@@ -224,19 +215,24 @@ class unify_value(Instruction):
         if wam.mode == READ:
             idx = wam.deref_reg(reg_idx)
             assert idx is not None
-            wam.unify(idx, wam.next_subterm)
+            if not wam.unify(idx, wam.next_subterm):
+                wam.backtrack()
+                return
         elif wam.mode == WRITE:
-            h = len(wam.heap)
-            wam.heap.append(wam.get_reg(reg_idx))
+            wam.add_to_heap(wam.get_reg(reg_idx))
         else:
             raise Exception('Mode not set!')
         wam.next_subterm += 1
 
 class call(Instruction):
     def call(self, wam, functor):
+        if functor not in wam.labels:
+            wam.backtrack()
+            return
         wam.cp = wam.p + 1
         wam.p = wam.labels[functor] - 1  # -1 because p will be incremented after this instruction
         #wam.reg_stack = wam.reg_stack[:functor[1]+1]
+        wam.num_args = functor[1]
 
 class proceed(Instruction):
     def proceed(self, wam):
@@ -253,8 +249,7 @@ class put_variable(Instruction):
     def put_variable(self, wam, reg_idx, arg_idx):
         wam.ensure_stack(reg_idx)
         wam.ensure_stack(arg_idx)
-        h = len(wam.heap)
-        wam.heap.append((REF, h))
+        h = wam.add_to_heap((REF,))
         wam.set_reg(reg_idx, wam.heap[h])
         wam.set_reg(arg_idx, wam.heap[h])
 
@@ -288,7 +283,8 @@ class get_value(Instruction):
         wam.ensure_stack(arg_idx)
         reg_idx = wam.deref_reg(reg_idx)
         arg_idx = wam.deref_reg(arg_idx)
-        wam.unify(reg_idx, arg_idx)
+        if not wam.unify(reg_idx, arg_idx):
+            wam.backtrack()
 
 class allocate(Instruction):
     def allocate(self, wam, size):
@@ -297,7 +293,39 @@ class allocate(Instruction):
 class deallocate(Instruction):
     def deallocate(self, wam):
         wam.p = wam.stack[wam.e].cp - 1
-        wam.pop_frame()
+        wam.pop_frame(wam.e)
+
+class label(Instruction):
+    def label(self, wam, name):
+        pass
+
+class try_me_else(Instruction):
+    def try_me_else(self, wam, label):
+        label_pos = wam.find_label(label, wam.p)
+        wam.hb = len(wam.heap)
+        wam.push_frame(ChoicePoint(wam.num_args, wam.reg_stack[:wam.num_args+1], wam.e, wam.cp, wam.b, label_pos, len(wam.trail), wam.hb))
+
+class retry_me_else(Instruction):
+    def retry_me_else(self, wam, label):
+        choice_point = wam.stack[wam.b]
+        wam.reg_stack[:choice_point.num_args + 1] = choice_point.args
+        wam.e = choice_point.ce
+        wam.cp = choice_point.cp
+        choice_point.bp = wam.find_label(label, wam.p)
+        wam.unwind_trail(choice_point.tr)
+        wam.heap = wam.heap[:choice_point.h]
+        wam.hb = choice_point.h
+
+class trust_me(Instruction):
+    def trust_me(self, wam):
+        choice_point = wam.stack[wam.b]
+        wam.reg_stack[:choice_point.num_args + 1] = choice_point.args
+        wam.e = choice_point.ce
+        wam.cp = choice_point.cp
+        wam.unwind_trail(choice_point.tr)
+        wam.heap = wam.heap[:choice_point.h]
+        wam.hb = choice_point.h
+        wam.pop_frame(wam.b)
 
 class Frame(object):
     def __init__(self):
@@ -309,9 +337,28 @@ class EnvironmentFrame(Frame):
         self.cp = cp
         self.reg_stack = [None] * (size+1)
 
+    def __str__(self):
+        return 'ce = %s   cp = %s   reg_stack = [%s]' % (self.ce, self.cp, ', '.join(str(x) for x in self.reg_stack[1:]))
+
+class ChoicePoint(Frame):
+    def __init__(self, num_args, args, ce, cp, b, bp, tr, h):
+        self.num_args = num_args
+        self.args = args
+        self.ce = ce
+        self.cp = cp
+        self.b = b
+        self.bp = bp
+        self.tr = tr
+        self.h = h
+
+    def __str__(self):
+        return 'num_args = %d    args = [%s]   ce = %s   cp = %s   b = %s   bp = %s   tr = %s   h = %s' \
+               % (self.num_args, ', '.join(str(x) for x in self.args[1:]), self.ce, self.cp, self.b, self.bp, self.tr, self.h)
+
 class WAM(object):
     def __init__(self):
         self.heap = []
+        self.hb = 0
         self.reg_stack = []
         self.mode = None
         self.next_subterm = None
@@ -321,18 +368,54 @@ class WAM(object):
         self.labels = {}
         self.stack = []
         self.e = None
+        self.b = None
+        self.trail = []
+        self.num_args = None
+
+    def add_to_heap(self, *items):
+        rv = len(self.heap)
+        for i, item in enumerate(items):
+            if item == (STR,):
+                item = (STR, rv + i + 1)
+            elif item == (REF,):
+                item = (REF, rv + i)
+            self.heap.append(item)
+        return rv
 
     def push_frame(self, frame):
         frame.position = len(self.stack)
         self.stack.append(frame)
         if isinstance(frame, EnvironmentFrame):
-            self.e = len(self.stack) - 1
+            self.e = frame.position
+        if isinstance(frame, ChoicePoint):
+            self.b = frame.position
+        print '(pushed %s frame at position %d)' % (type(frame), frame.position)
 
-    def pop_frame(self):
-        frame = self.stack[-1]
-        self.stack = self.stack[:-1]
+    def pop_frame(self, frame_idx):
+        frame = self.stack[frame_idx]
         if isinstance(frame, EnvironmentFrame):
             self.e = frame.ce
+        if isinstance(frame, ChoicePoint):
+            self.b = frame.b
+        self.stack = self.stack[:max(self.e, self.b, -1)+1]
+        print '(popped %s frame at %d)' % (type(frame), frame_idx)
+
+    def backtrack(self):
+        if self.b is None:
+            raise Exception('Cannot backtrack any more; exhausted all choice points')
+        assert isinstance(self.stack[self.b], ChoicePoint)
+        self.p = self.stack[self.b].bp - 1
+
+    def find_label(self, label_name, pos):
+        """
+            Search for the first matching label after the code position.
+        """
+        for i in range(pos, len(self.code)):
+            instr = self.code[i]
+            if isinstance(instr, label) and instr.get_args()[0] == label_name:
+                return i
+
+        return None
 
     def ensure_stack(self, idx):
         if idx < PERMANENT_REGISTER_BASE:
@@ -367,14 +450,60 @@ class WAM(object):
             return self.deref(b)
         return None
 
+    def record_trail(self, idx):
+        if idx < self.hb:   # or (self.h < idx and idx < self.b)
+            self.trail.append(idx)
+
+    def unwind_trail(self, unwind_to):
+        while len(self.trail) > unwind_to:
+            idx = self.trail.pop()
+            self.heap[idx] = (REF, idx)
+
     def bind(self, idx1, idx2):
         """
-            Bind a variable at idx1 to idx2.
+            Bind a variable at idx1 to idx2.  If we have a choice (i.e. if both are currently unbound)
+            we bind the higher address to the lower address.
+
+            >>> wam = WAM()
+            >>> wam.hb = 2
+            >>> wam.heap = [(REF, 0), (REF, 1)]
+            >>> wam.bind(0, 1)
+            >>> wam.heap
+            [(REF, 0), (REF, 0)]
+            >>> wam.trail
+            [1]
+
+            >>> wam.trail = []
+            >>> wam.heap = [(REF, 0), (REF, 1)]
+            >>> wam.bind(1, 0)
+            >>> wam.heap
+            [(REF, 0), (REF, 0)]
+            >>> wam.trail
+            [1]
+
+            >>> wam.trail = []
+            >>> wam.heap = [(REF, 0), (STR, 2)]
+            >>> wam.bind(0, 1)
+            >>> wam.heap
+            [(REF, 1), (STR, 2)]
+            >>> wam.trail
+            [0]
+
+            >>> wam.trail = []
+            >>> wam.heap = [(STR, 2), (REF, 1)]
+            >>> wam.bind(0, 1)
+            >>> wam.heap
+            [(STR, 2), (REF, 0)]
+            >>> wam.trail
+            [1]
         """
+        if idx1 < idx2:
+            idx1, idx2 = idx2, idx1
         if self.heap[idx1] != (REF, idx1):
             idx1,idx2 = idx2,idx1
         assert self.heap[idx1] == (REF, idx1)
         self.heap[idx1] = (REF, idx2)
+        self.record_trail(idx1)
 
     def unify(self, idx1, idx2):
         """
@@ -465,6 +594,7 @@ class WAM(object):
             print '*', self.p, instr
             self.execute([instr])
             self.p += 1
+            #print_wam(self)
 
 class RegisterAllocation(object):
     def __init__(self):
@@ -782,6 +912,34 @@ class Compiler(object):
             instrs.append(proceed())
         return instrs
 
+    def compile_predicate(self, rules):
+        if len(rules) == 0:
+            raise Exception('Predicate needs at least one clause')
+
+        heads_and_subgoals = [(get_head(x), get_body_subgoals(x)) for x in rules]
+        functors = [x.get_functor() for x,_ in heads_and_subgoals]
+
+        distinct_functors = set(functors)
+        if len(distinct_functors) > 1:
+            raise Exception('Predicate needs a distinct functor (has %s)' % ', '.join(format_functor(x) for x in distinct_functors))
+        functor = functors[0]
+
+        instrs = []
+        instrs.append(label(format_functor(functor)))
+        for i, (head, subgoals) in enumerate(heads_and_subgoals):
+            if i > 0:
+                instrs.append(label('L%d' % i))
+            if len(rules) > 1:
+                if i == 0:
+                    instrs.append(try_me_else('L1'))
+                elif i < len(rules) - 1:
+                    instrs.append(retry_me_else('L%d' % (i+1)))
+                else:
+                    instrs.append(trust_me())
+            instrs.extend(self.compile_rule(head, subgoals))
+
+        return instrs
+
     def write_to_heap(self, term, wam, var_idxes=None):
         """
             Write a term to a WAM heap, and return the index of its root cell.  Also populate
@@ -816,43 +974,44 @@ class Compiler(object):
 
         term = term.resolve()
         if isinstance(term, Atom):
-            h = len(wam.heap)
-            wam.heap.append((STR, h+1))
-            wam.heap.append(term.get_functor())
+            h = wam.add_to_heap((STR,), term.get_functor())
         elif isinstance(term, Variable):
             if term in var_idxes:
                 h = var_idxes[term]
-                wam.heap.append((REF, h))
+                wam.add_to_heap((REF, h))
             else:
-                h = len(wam.heap)
-                wam.heap.append((REF, h))
+                h = wam.add_to_heap((REF,))
                 var_idxes[term] = h
         elif isinstance(term, Compound):
             sub_idxes = [self.write_to_heap(st, wam, var_idxes) for st in term.subterms]
-            h = len(wam.heap)
-            wam.heap.append((STR, h+1))
-            wam.heap.append(term.get_functor())
+            h = wam.add_to_heap((STR,), term.get_functor())
             for si in sub_idxes:
-                wam.heap.append((REF, si))
+                wam.add_to_heap((REF, si))
         else:
             raise Exception('Unhandled term type: %s' % type(term))
         return h
 
-def print_instrs(instrs):
+def print_instrs(instrs, offset=0):
     def arg_str(arg):
         if type(arg) is tuple and type(arg[0]) is str and type(arg[1]) is int:
             return '%s/%d' % arg
         return str(arg)
 
-    for instr in instrs:
+    for i, instr in enumerate(instrs):
         name = instr.get_name()
         args = instr.get_args()
-        if len(args) == 0:
-            print name
+        if isinstance(instr, label):
+            print '%s:' % (args)
+        elif len(args) == 0:
+            print '[%2d] %s' % (i + offset, name)
         else:
-            print '%s %s' % (name, ', '.join(arg_str(x) for x in args))
+            print '[%2d] %s %s' % (i + offset, name, ', '.join(arg_str(x) for x in args))
 
 def print_heap(heap):
+    print '       ',
+    for i in range(10):
+        print '[%2d]    ' % i,
+    print
     for i, cell in enumerate(heap):
         if i % 10 == 0:
             if i != 0:
@@ -867,9 +1026,24 @@ def print_heap(heap):
         print '%-8s' % s,
     print
 
-def main():
-    from term_parser import parse, unparse
+def print_wam(wam):
+    print 'WAM state:'
+    print 'mode = %s   next = %s' % (wam.mode, wam.next_subterm)
+    print 'p = %d   cp = %s' % (wam.p, wam.cp)
+    print 'e = %s   b = %s' % (wam.e, wam.b)
+    print 'hb = %d   trail = %s' % (wam.hb, wam.trail)
+    print 'Heap:'
+    print_heap(wam.heap)
+    print 'Registers:'
+    print_heap(wam.reg_stack)
+    print 'Stack:'
+    for i, frame in enumerate(wam.stack):
+        print '[%2d]   %s' % (i, frame)
+    #print 'Code:'
+    #print_instrs(wam.code)
+    print
 
+def main():
     try:
         if len(sys.argv) < 2:
             raise IndexError
@@ -894,30 +1068,32 @@ def main():
     compiler = Compiler()
     wam = WAM()
 
-    print
-    print 'Compiled program to:'
+    predicates = {}
     for p,_ in programs_and_scopes:
-        if p.get_functor() == (':-', 2):
-            head = p.subterms[0]
-            subgoals = find_subgoals(p.subterms[1])
-        else:
-            head = p
-            subgoals = []
-        program_instrs = compiler.compile_rule(head, subgoals)
-        wam.load(head.get_functor(), program_instrs)
-        print '%s:' % (head.get_functor(),)
-        print_instrs(program_instrs)
+        functor = get_head(p).get_functor()
+        if functor not in predicates:
+            predicates[functor] = []
+        predicates[functor].append(p)
+
+    for functor, rules in predicates.items():
+        pred_instrs = compiler.compile_predicate(rules)
+        wam.load(functor, pred_instrs)
 
     print
-    print 'Compiled query to:'
+    print 'Compiled program to:'
+    print_instrs(wam.code)
+
     query_reg_allocation = RegisterAllocation()
     query_instrs = compiler.compile_query_m2(query, reg_allocation=query_reg_allocation)
-    print_instrs(query_instrs)
+    wam.p = wam.load(None, query_instrs)
+    print
+    print 'Compiled query to:'
+    print_instrs(wam.code[wam.p:], offset=wam.p)
     print 'Register allocations are: ', ', '.join('%s: %s' % (n, query_reg_allocation[v]) for n,v in query_scope.names_to_vars.items())
 
     print
     print 'Running query and program...'
-    wam.p = wam.load(None, query_instrs)
+
     wam.push_frame(EnvironmentFrame(None, None, size=len(query_reg_allocation.permanent_allocation)))
     wam.run()
     for n, v in query_scope.names_to_vars.items():
@@ -925,10 +1101,7 @@ def main():
 
     print
     print 'Final WAM state:'
-    print 'Heap:'
-    print_heap(wam.heap)
-    print 'Registers:'
-    print_heap(wam.reg_stack)
+    print_wam(wam)
 
 if __name__ == '__main__':
     main()
