@@ -800,7 +800,7 @@ class Compiler(object):
             instrs.extend(self.compile_query_m1(sg, reg_allocation, vars_set))
         return instrs
 
-    def compile_program(self, program, reg_allocation=None, vars_set=None, arg_idx=None):
+    def compile_program(self, program, reg_allocation=None, vars_set=None, arg_idx=None, recurse=True):
         """
             >>> c = Compiler()
             >>> c.compile_program(Atom('a'))
@@ -837,12 +837,13 @@ class Compiler(object):
                     vars_set.add(subterm)
                     instrs.append(unify_variable(reg_allocation[subterm]))
             # Build nested terms
-            for subterm in program.subterms:
-                subterm = subterm.resolve()
-                if isinstance(subterm, Variable):
-                    continue
-                instrs.extend(self.compile_program(subterm, reg_allocation, vars_set))
-                vars_set.add(subterm)
+            if recurse:
+                for subterm in program.subterms:
+                    subterm = subterm.resolve()
+                    if isinstance(subterm, Variable):
+                        continue
+                    instrs.extend(self.compile_program(subterm, reg_allocation, vars_set))
+                    vars_set.add(subterm)
             return instrs
         elif isinstance(program, Variable):
             if arg_idx is not None:
@@ -859,6 +860,12 @@ class Compiler(object):
                     return [unify_variable( reg_allocation[program])]
 
     def compile_program_m1(self, program, reg_allocation=None, vars_set=None):
+        """
+            >>> c = Compiler()
+            >>> X = Variable()
+            >>> c.compile_program_m1(Compound('f', Compound('g', Compound('g', X)), X))
+            [get_structure(('g', 1), 1), unify_variable(3), get_variable(4, 2), get_structure(('g', 1), 3), unify_value(4), proceed()]
+        """
         if isinstance(program, Atom):
             return [(proceed,)]
         elif isinstance(program, Compound):
@@ -873,10 +880,25 @@ class Compiler(object):
                 reg_allocation.allocate_registers(subterm)
 
             instrs = []
+
+            # First do basic structure for all subterms
             for i, subterm in enumerate(program.subterms):
                 subterm = subterm.resolve()
-                instrs.extend(self.compile_program(subterm, reg_allocation, vars_set, arg_idx=(i+1)))
+                instrs.extend(self.compile_program(subterm, reg_allocation, vars_set, arg_idx=(i+1), recurse=False))
                 vars_set.add(subterm)
+
+            # Then do remaining structure for any subterms that need it
+            for subterm in program.subterms:
+                subterm = subterm.resolve()
+                if not isinstance(subterm, Compound):
+                    continue
+
+                for subterm in subterm.subterms:
+                    subterm = subterm.resolve()
+                    if isinstance(subterm, Variable):
+                        continue
+                    instrs.extend(self.compile_program(subterm, reg_allocation, vars_set))
+                    vars_set.add(subterm)
 
             instrs.append(proceed())
             return instrs
