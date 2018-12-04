@@ -70,7 +70,6 @@ class put_structure(Instruction):
 
     def put_structure(self, wam, functor, reg_idx):
         h = wam.add_to_heap((STR, ), functor)
-        wam.ensure_stack(reg_idx)
         wam.set_reg(reg_idx, (REF, h))
 
 class set_variable(Instruction):
@@ -88,7 +87,6 @@ class set_variable(Instruction):
 
     def set_variable(self, wam, reg_idx):
         h = wam.add_to_heap((REF,))
-        wam.ensure_stack(reg_idx)
         wam.set_reg(reg_idx, wam.heap[h])
 
 class set_value(Instruction):
@@ -103,7 +101,6 @@ class set_value(Instruction):
     """
 
     def set_value(self, wam, reg_idx):
-        wam.ensure_stack(reg_idx)
         wam.add_to_heap(wam.get_reg(reg_idx))
 
 class get_structure(Instruction):
@@ -130,7 +127,6 @@ class get_structure(Instruction):
 
     def get_structure(self, wam, functor, reg_idx):
         wam.next_subterm = 1
-        wam.ensure_stack(reg_idx)
         idx = wam.deref_reg(reg_idx)
         if idx is not None:
             a, b = wam.heap[idx]
@@ -174,7 +170,6 @@ class unify_variable(Instruction):
     """
 
     def unify_variable(self, wam, reg_idx):
-        wam.ensure_stack(reg_idx)
         if wam.mode == READ:
             wam.set_reg(reg_idx, (REF, wam.next_subterm))
         elif wam.mode == WRITE:
@@ -211,7 +206,6 @@ class unify_value(Instruction):
     """
 
     def unify_value(self, wam, reg_idx):
-        wam.ensure_stack(reg_idx)
         if wam.mode == READ:
             idx = wam.deref_reg(reg_idx)
             assert idx is not None
@@ -247,8 +241,6 @@ class put_variable(Instruction):
     """
 
     def put_variable(self, wam, reg_idx, arg_idx):
-        wam.ensure_stack(reg_idx)
-        wam.ensure_stack(arg_idx)
         h = wam.add_to_heap((REF,))
         wam.set_reg(reg_idx, wam.heap[h])
         wam.set_reg(arg_idx, wam.heap[h])
@@ -259,8 +251,6 @@ class put_value(Instruction):
     """
 
     def put_value(self, wam, reg_idx, arg_idx):
-        wam.ensure_stack(reg_idx)
-        wam.ensure_stack(arg_idx)
         wam.set_reg(arg_idx, wam.get_reg(reg_idx))
 
 class get_variable(Instruction):
@@ -269,8 +259,6 @@ class get_variable(Instruction):
     """
 
     def get_variable(self, wam, reg_idx, arg_idx):
-        wam.ensure_stack(reg_idx)
-        wam.ensure_stack(arg_idx)
         wam.set_reg(reg_idx, wam.get_reg(arg_idx))
 
 class get_value(Instruction):
@@ -279,8 +267,6 @@ class get_value(Instruction):
     """
 
     def get_value(self, wam, reg_idx, arg_idx):
-        wam.ensure_stack(reg_idx)
-        wam.ensure_stack(arg_idx)
         reg_idx = wam.deref_reg(reg_idx)
         arg_idx = wam.deref_reg(arg_idx)
         if not wam.unify(reg_idx, arg_idx):
